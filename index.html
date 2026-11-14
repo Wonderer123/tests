@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#4f46e5">
+  <title>Mock Tracker</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%234f46e5'/%3E%3Cpath d='M7 22l6-7 5 4 7-9' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <h1 class="brand">Mock Tracker</h1>
+      <span id="syncStatus" class="sync" aria-live="polite"></span>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button class="tab" role="tab" data-view="dashboard" aria-selected="true">Dashboard</button>
+      <button class="tab" role="tab" data-view="add" aria-selected="false">Add mock</button>
+      <button class="tab" role="tab" data-view="history" aria-selected="false">History</button>
+    </nav>
+  </header>
+
+  <div id="banner" class="banner" hidden></div>
+
+  <main>
+    <!-- ================= DASHBOARD ================= -->
+    <section id="view-dashboard" class="view" role="tabpanel">
+      <div id="dashEmpty" class="empty" hidden>
+        <p class="empty-title">No mocks yet</p>
+        <p>Add your first Guidely mock and your progress will show up here.</p>
+        <button class="btn btn-primary" data-goto="add">Add a mock</button>
+      </div>
+
+      <div id="dashBody" hidden>
+        <details class="filters card">
+          <summary>
+            <span>Filters</span>
+            <span id="filterSummary" class="muted"></span>
+          </summary>
+          <div class="filter-grid">
+            <label>Exam type
+              <select id="fType"></select>
+            </label>
+            <label>Show
+              <select id="fLastN">
+                <option value="0">All mocks</option>
+                <option value="5">Last 5</option>
+                <option value="10">Last 10</option>
+                <option value="20">Last 20</option>
+              </select>
+            </label>
+            <label>From
+              <input type="date" id="fFrom">
+            </label>
+            <label>To
+              <input type="date" id="fTo">
+            </label>
+            <label class="check">
+              <input type="checkbox" id="fIncomplete">
+              Include incomplete attempts
+            </label>
+            <button class="btn btn-ghost" id="fReset" type="button">Reset</button>
+          </div>
+        </details>
+
+        <div id="kpis" class="kpis"></div>
+
+        <div id="insight" class="card insight"></div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>Score trend</h2>
+            <span class="muted small">vs cut-off &amp; Guidely average</span>
+          </div>
+          <div class="chart-box"><canvas id="chartScore"></canvas></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>Percentile</h2>
+            <span class="muted small">fair comparison across easy &amp; hard mocks</span>
+          </div>
+          <div class="chart-box chart-short"><canvas id="chartPct"></canvas></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>Section scores</h2>
+            <span class="muted small">dashed = sectional cut-off</span>
+          </div>
+          <div class="chart-box"><canvas id="chartSections"></canvas></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>Attempts vs accuracy</h2>
+            <div id="attemptSectionPick" class="seg" role="group" aria-label="Section"></div>
+          </div>
+          <p class="muted small">Bars = questions attempted. Shaded band = Guidely's "good attempts" range. Line = accuracy.</p>
+          <div class="chart-box"><canvas id="chartAttempts"></canvas></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>Time management</h2>
+            <div id="timePick" class="seg" role="group" aria-label="Time view">
+              <button type="button" data-time="split" aria-pressed="true">Used vs wasted</button>
+              <button type="button" data-time="section" aria-pressed="false">Per section</button>
+            </div>
+          </div>
+          <div class="chart-box"><canvas id="chartTime"></canvas></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>Where marks are lost</h2>
+            <span class="muted small">avg questions per mock not scored</span>
+          </div>
+          <ol id="leaks" class="leaks"></ol>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>Topic strength</h2>
+            <div id="topicSectionPick" class="seg" role="group" aria-label="Section"></div>
+          </div>
+          <p class="muted small">Score = correct ÷ questions (skips count against it). Weakest first. Tap a column to sort.</p>
+          <div class="table-wrap">
+            <table class="topics" id="topicTable">
+              <thead>
+                <tr>
+                  <th data-sort="topic">Topic</th>
+                  <th data-sort="rate" class="num" title="Correct ÷ questions">Score</th>
+                  <th data-sort="attemptRate" class="num" title="Share of its questions attempted">Tried</th>
+                  <th data-sort="accuracy" class="num" title="Correct ÷ attempted">Acc.</th>
+                  <th data-sort="trend" class="num" title="Later mocks vs earlier mocks">Trend</th>
+                  <th data-sort="mocks" class="num wide-only" title="Mocks it appeared in">Mocks</th>
+                  <th data-sort="perMock" class="num wide-only" title="Average questions per mock">Qs/mock</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="two-col">
+          <div class="card">
+            <h2>Consistently weak</h2>
+            <p class="muted small" id="weakRule"></p>
+            <ul id="weakList" class="chips"></ul>
+          </div>
+          <div class="card">
+            <h2>Consistently strong</h2>
+            <p class="muted small" id="strongRule"></p>
+            <ul id="strongList" class="chips"></ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= ADD / EDIT ================= -->
+    <section id="view-add" class="view" role="tabpanel" hidden>
+      <form id="examForm" novalidate autocomplete="off">
+        <div class="form-title">
+          <h2 id="formTitle">Add a mock</h2>
+          <button type="button" id="cancelEdit" class="btn btn-ghost" hidden>Cancel edit</button>
+        </div>
+
+        <fieldset class="card">
+          <legend>Mock details</legend>
+          <div class="grid2">
+            <label>Date
+              <input type="date" name="date" required>
+            </label>
+            <label>Exam type
+              <select name="exam_type" id="examType"></select>
+            </label>
+          </div>
+          <label>Mock name
+            <input type="text" name="mock_name" required maxlength="200"
+                   placeholder="e.g. 2025 Mock Test-20" list="mockNames">
+            <datalist id="mockNames"></datalist>
+          </label>
+          <div class="grid3">
+            <label>Overall cut-off
+              <input type="number" name="cutoff" inputmode="decimal" step="any" min="0">
+            </label>
+            <label>Percentile
+              <input type="number" name="percentile" inputmode="decimal" step="any" min="0" max="100">
+            </label>
+            <label>Guidely avg score
+              <input type="number" name="average_score" inputmode="decimal" step="any">
+            </label>
+            <label>Rank
+              <input type="number" name="rank" inputmode="numeric" step="1" min="1">
+            </label>
+            <label>Out of (takers)
+              <input type="number" name="total_takers" inputmode="numeric" step="1" min="1">
+            </label>
+          </div>
+        </fieldset>
+
+        <div id="sectionBlocks"></div>
+
+        <div class="card totals" id="liveTotals" aria-live="polite"></div>
+
+        <fieldset class="card">
+          <legend>Extra</legend>
+          <label>Notes
+            <textarea name="notes" rows="2" maxlength="1000" placeholder="e.g. rushed DI, puzzles took too long"></textarea>
+          </label>
+          <label class="check">
+            <input type="checkbox" name="incomplete">
+            Incomplete attempt (left early): leave it out of the stats
+          </label>
+        </fieldset>
+
+        <fieldset class="card">
+          <legend>PIN</legend>
+          <label>PIN (needed to save, remembered on this device)
+            <input type="password" name="pin" id="pinInput" inputmode="numeric" autocomplete="off" maxlength="20">
+          </label>
+        </fieldset>
+
+        <div id="formErrors" class="form-errors" role="alert" hidden></div>
+
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary btn-big" id="saveBtn">Save mock</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- ================= HISTORY ================= -->
+    <section id="view-history" class="view" role="tabpanel" hidden>
+      <div class="card-head">
+        <h2>All mocks</h2>
+        <span id="historyCount" class="muted small"></span>
+      </div>
+      <div id="historyEmpty" class="empty" hidden>
+        <p>No mocks saved yet.</p>
+      </div>
+      <ul id="historyList" class="history"></ul>
+
+      <div class="card">
+        <h2>Backup &amp; settings</h2>
+        <div class="settings-row">
+          <button type="button" class="btn" id="exportJson">Download backup (JSON)</button>
+          <button type="button" class="btn" id="exportCsv">Download CSV</button>
+        </div>
+        <div class="settings-row">
+          <label class="btn" for="importFile">Import backup (JSON)…</label>
+          <input type="file" id="importFile" accept=".json,application/json" hidden>
+        </div>
+        <p class="muted small">Import adds mocks from a backup file and skips any already saved. Needs the PIN.</p>
+        <div class="settings-row">
+          <button type="button" class="btn btn-ghost" id="forgetPin">Forget saved PIN on this device</button>
+        </div>
+        <p class="muted small" id="connInfo"></p>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+  <dialog id="confirmDialog">
+    <form method="dialog">
+      <p id="confirmText"></p>
+      <div class="dialog-actions">
+        <button value="cancel" class="btn">Cancel</button>
+        <button value="ok" class="btn btn-danger" id="confirmOk">Delete</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <script src="config.js"></script>
+  <script src="calc.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

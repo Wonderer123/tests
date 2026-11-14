@@ -1,0 +1,19 @@
+# The repo is public: keep personal material out of it.
+
+# Guidely screenshots (show username / email) and working notes
+test*/
+_reference*/
+*.png
+*.jpg
+*.jpeg
+project brief.md
+
+# Real mock data. It is loaded into the Google Sheet via the app's
+# "Import backup" button, so it never needs to be on GitHub.
+seed/
+
+# Editor / OS clutter
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
