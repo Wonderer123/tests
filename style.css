@@ -509,6 +509,14 @@ details.sub > summary .muted { font-weight: 400; font-size: .8rem; }
   padding: 12px 14px;
   margin-bottom: 8px;
 }
+.history li.h-day {
+  background: none;
+  border: 0;
+  padding: 10px 2px 2px;
+  margin: 0;
+  font-weight: 700;
+  font-size: .9rem;
+}
 .h-top { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
 .h-name { font-weight: 650; overflow-wrap: anywhere; }
 .h-score { font-weight: 750; font-size: 1.1rem; white-space: nowrap; font-variant-numeric: tabular-nums; }

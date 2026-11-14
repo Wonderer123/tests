@@ -8,6 +8,9 @@ _reference*/
 *.jpeg
 project brief.md
 
+# Private back-fill typing page (local use only)
+entry.html
+
 # Real mock data. It is loaded into the Google Sheet via the app's
 # "Import backup" button, so it never needs to be on GitHub.
 seed/
@@ -17,3 +20,6 @@ seed/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Local launcher for entry.html
+open-entry.bat

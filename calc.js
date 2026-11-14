@@ -194,7 +194,48 @@
     });
     list.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : String(a.created_at) < String(b.created_at) ? -1 : 1));
     list.forEach((e, i) => { e.seq = i + 1; });
+    numberWithinDay(list);
     return list;
+  }
+
+  /**
+   * She often takes several mocks on one day, so mocks are identified by date
+   * plus their order that day: dayIndex (1, 2, 3…) and dayCount (mocks that day).
+   * Works on any chronologically sorted list (e.g. a filtered one).
+   */
+  function numberWithinDay(list) {
+    const counts = {};
+    list.forEach((e) => { counts[e.date] = (counts[e.date] || 0) + 1; });
+    const seen = {};
+    list.forEach((e) => {
+      seen[e.date] = (seen[e.date] || 0) + 1;
+      e.dayIndex = seen[e.date];
+      e.dayCount = counts[e.date];
+    });
+    return list;
+  }
+
+  /**
+   * Chart axis labels. The date is printed once, under the first mock of the
+   * day; when there were several mocks that day each also gets its order
+   * (1, 2, 3…) on a second line:   12 Nov   13 Nov    ·     ·    14 Nov
+   *                                          1       2     3      1
+   */
+  function axisLabels(list) {
+    const counts = {};
+    list.forEach((e) => { counts[e.date] = (counts[e.date] || 0) + 1; });
+    const seen = {};
+    return list.map((e) => {
+      seen[e.date] = (seen[e.date] || 0) + 1;
+      const first = seen[e.date] === 1;
+      if (counts[e.date] === 1) return [fmtDate(e.date), ''];
+      return [first ? fmtDate(e.date) : '', String(seen[e.date])];
+    });
+  }
+
+  /** "13 Nov · mock 2 of 5" (or just "13 Nov" when it was the only mock that day). */
+  function dayLabel(e) {
+    return fmtDate(e.date) + (e.dayCount > 1 ? ' · mock ' + e.dayIndex + ' of ' + e.dayCount : '');
   }
 
   /** Add derived numbers used throughout the dashboard. */
@@ -427,6 +468,7 @@
   const Calc = {
     num, round, ratio, sum, fmtTime, fmtScore, fmtPct, fmtDate, shortMockName, newExamId,
     sectionDef, normalizeExam, validateExam, buildModel, enrichExam, filterExams, kpis,
+    numberWithinDay, axisLabels, dayLabel,
     sectionNames, attemptGap, topicStats, markLeaks, toCSV, toBackup,
   };
 

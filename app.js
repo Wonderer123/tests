@@ -443,7 +443,7 @@
 
   function tooltipTitle(items) {
     const e = state.filtered[items[0].dataIndex];
-    return e ? C.shortMockName(e.mock_name) + ' · ' + C.fmtDate(e.date) : '';
+    return e ? [C.shortMockName(e.mock_name), C.dayLabel(e)] : '';
   }
 
   function baseOptions(yTitle) {
@@ -456,7 +456,11 @@
         tooltip: { callbacks: { title: tooltipTitle } },
       },
       scales: {
-        x: { grid: { display: false } },
+        x: {
+          grid: { display: false },
+          // Keep date labels flat; only start skipping labels when there are many mocks.
+          ticks: { maxRotation: 0, autoSkip: state.filtered.length > 12, font: { size: 10 } },
+        },
         y: {
           beginAtZero: true,
           grid: { color: cssVar('--line') },
@@ -483,7 +487,8 @@
     window.Chart.defaults.borderColor = cssVar('--line');
     window.Chart.defaults.font.family = getComputedStyle(document.body).fontFamily;
 
-    const labels = list.map((e) => '#' + e.seq);
+    // X axis = dates; several mocks on one day get a second line "1", "2", "3"…
+    const labels = C.axisLabels(list);
     const colors = [cssVar('--c1'), cssVar('--c2'), cssVar('--c3'), cssVar('--c4')];
     const secNames = C.sectionNames(list);
 
@@ -1051,19 +1056,27 @@
   // =========================================================================
   // 8. History list, backup & settings
   // =========================================================================
+  /** History: newest day first, grouped under a date heading; mocks numbered in the order taken that day. */
   function renderHistory() {
     const list = state.exams.slice().reverse();
     $('#historyEmpty').hidden = list.length > 0 || !state.loaded;
     $('#historyCount').textContent = list.length ? list.length + ' saved' : '';
+    let lastDate = null;
     $('#historyList').innerHTML = list.map((e) => {
+      let head = '';
+      if (e.date !== lastDate) {
+        lastDate = e.date;
+        head = '<li class="h-day">' + esc(C.fmtDate(e.date, true)) +
+          '<span class="muted"> · ' + e.dayCount + ' mock' + (e.dayCount > 1 ? 's' : '') + '</span></li>';
+      }
       const meta = [
-        C.fmtDate(e.date, true),
+        e.dayCount > 1 ? 'Mock ' + e.dayIndex + ' of the day' : '',
         e.percentile !== null ? e.percentile + ' %ile' : '',
         'accuracy ' + C.fmtPct(e.accuracy),
         e.exam_type,
       ].filter(Boolean).map((m) => '<span>' + esc(m) + '</span>').join('');
-      return '<li>' +
-        '<div class="h-top"><div class="h-name">#' + e.seq + ' ' + esc(C.shortMockName(e.mock_name)) + '</div>' +
+      return head + '<li>' +
+        '<div class="h-top"><div class="h-name">' + esc(C.shortMockName(e.mock_name)) + '</div>' +
         '<div class="h-score">' + C.fmtScore(e.score) + '<span class="muted small"> / ' + C.fmtScore(e.max_score) + '</span></div></div>' +
         '<div class="h-meta">' + meta + marginBadge(e.margin) +
         (e.incomplete ? '<span class="badge neutral">incomplete</span>' : '') + '</div>' +
