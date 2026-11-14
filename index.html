@@ -71,7 +71,7 @@
         <div class="card">
           <div class="card-head">
             <h2>Score trend</h2>
-            <span class="muted small">vs cut-off &amp; Guidely average</span>
+            <span class="muted small">vs cut-off &amp; average of all takers</span>
           </div>
           <div class="chart-box"><canvas id="chartScore"></canvas></div>
         </div>
@@ -195,8 +195,8 @@
             <label>Percentile
               <input type="number" name="percentile" inputmode="decimal" step="any" min="0" max="100">
             </label>
-            <label>Guidely avg score
-              <input type="number" name="average_score" inputmode="decimal" step="any">
+            <label title="Toppers Benchmark → Average Score on Guidely's analysis page">Avg of all takers
+              <input type="number" name="average_score" inputmode="decimal" step="any" placeholder="optional">
             </label>
             <label>Rank
               <input type="number" name="rank" inputmode="numeric" step="1" min="1">

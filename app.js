@@ -505,7 +505,7 @@
         datasets: [
           lineDs('Score', list.map((e) => e.score), colors[0]),
           lineDs('Cut-off', list.map((e) => e.cutoff), cssVar('--c-cut'), { borderDash: [6, 4], borderWidth: 2, pointRadius: 0, tension: 0 }),
-          lineDs('Guidely average', list.map((e) => e.average_score), cssVar('--c-avg'), { borderDash: [2, 3], borderWidth: 2, pointRadius: 2 }),
+          lineDs('Avg of all takers', list.map((e) => e.average_score), cssVar('--c-avg'), { borderDash: [2, 3], borderWidth: 2, pointRadius: 2 }),
         ],
       },
       options: scoreOpts,
