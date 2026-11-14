@@ -7,7 +7,7 @@
  */
 window.APP_CONFIG = {
   // Google Apps Script web app URL (ends in /exec). Leave empty for demo mode.
-  SCRIPT_URL: '',
+  SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbyylbtAB2OZSg81xcTKlHf6H2bO_bdJ08bL5sHyRzxF6YcNsM_EH66ipxiznN0COdE8mg/exec',
 
   // Exam type pre-selected in the forms, and the dashboard's default filter
   // (so 40-mark sectional tests aren't mixed into the 80-mark mock trend).
