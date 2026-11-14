@@ -67,6 +67,9 @@ Open the site on a computer → **History → Import backup (JSON)…** → choo
 
 ## Changing things
 
+- **New kind of test (sectional, mains…):** just type a new exam type name in the form and tick its
+  sections; the number of questions per section can be changed per mock. The dashboard filters by
+  exam type and opens on `DEFAULT_EXAM_TYPE`, so 40-mark sectionals don't mix into 80-mark mock trends.
 - **Exam types, sections, topics, thresholds:** edit `config.js` and push. Existing data keeps working.
 - **Change the PIN:** Apps Script → Project Settings → Script Properties.
 - **After editing `Code.gs`:** **Deploy → Manage deployments → ✏️ Edit → Version: New version → Deploy.**

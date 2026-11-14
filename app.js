@@ -132,7 +132,8 @@
   // =========================================================================
   // 2. State
   // =========================================================================
-  const defaultFilters = { type: '', from: '', to: '', lastN: 0, includeIncomplete: false };
+  // Default to the main exam type so 40-mark sectional tests don't distort the 80-mark mock trends.
+  const defaultFilters = { type: CFG.DEFAULT_EXAM_TYPE, from: '', to: '', lastN: 0, includeIncomplete: false };
   const state = {
     demo: !CFG.SCRIPT_URL,
     exams: [],          // full model (oldest → newest), from Calc.buildModel
@@ -294,6 +295,7 @@
     if (state.view === 'dashboard') renderDashboard();
     renderHistory();
     renderMockNameList();
+    renderExamTypeList();
   }
 
   // =========================================================================
@@ -700,8 +702,37 @@
   // =========================================================================
   const form = () => $('#examForm');
 
-  function examTypeDef(name) {
-    return CFG.EXAM_TYPES.find((t) => t.name === name) || CFG.EXAM_TYPES[0];
+  /**
+   * Sections for the exam type typed in the form. Known types (config or used
+   * before) bring their own sections; a brand-new type shows tick boxes and
+   * uses whichever sections are ticked (or, when editing, the saved ones).
+   */
+  function examTypeDef(name, values) {
+    const r = C.resolveExamType(CFG, name, state.exams);
+    const box = $('#customSections');
+    if (r.source !== 'custom') {
+      box.hidden = true;
+      return r;
+    }
+    const all = C.allSections(CFG);
+    const checks = $('#customSectionChecks');
+    // First time this new name is shown: tick the sections from the values being edited, if any.
+    if (box.dataset.forType !== name) {
+      box.dataset.forType = name;
+      const pre = ((values && values.sections) || []).map((s) => s.section);
+      checks.innerHTML = all.map((s) =>
+        '<label class="check"><input type="checkbox" value="' + esc(s.name) + '"' + (pre.indexOf(s.name) >= 0 ? ' checked' : '') + '> ' +
+        esc(shortSection(s.name)) + '</label>').join('');
+    }
+    box.hidden = !name;
+    const ticked = $$('input:checked', checks).map((i) => i.value);
+    r.sections = all.filter((s) => ticked.indexOf(s.name) >= 0);
+    return r;
+  }
+
+  function renderExamTypeList() {
+    const names = Array.from(new Set(CFG.EXAM_TYPES.map((t) => t.name).concat(state.exams.map((e) => e.exam_type)))).filter(Boolean);
+    $('#examTypes').innerHTML = names.map((n) => '<option value="' + esc(n) + '">').join('');
   }
 
   /** Topic list for a section: config order first, then any topic used in past entries. */
@@ -736,16 +767,23 @@
 
   /** Build one card per section of the chosen exam type, then fill values. */
   function buildSectionBlocks(examTypeName, values) {
-    const type = examTypeDef(examTypeName);
+    const type = examTypeDef(examTypeName, values);
     const box = $('#sectionBlocks');
+    if (!type.sections.length) {
+      box.innerHTML = '<div class="card muted">' + (examTypeName ? 'Tick the sections this exam type has (above).' : 'Choose or type the exam type first.') + '</div>';
+      updateLive();
+      return;
+    }
     box.innerHTML = type.sections.map((s) => {
       const extraTopics = ((values && values.topics) || []).filter((t) => t.section === s.name).map((t) => t.topic);
       return '<fieldset class="card sec-card" data-section="' + esc(s.name) + '" data-questions="' + s.questions + '">' +
-        '<legend>' + esc(s.name) + ' <span class="muted small">(' + s.questions + ' Qs)</span></legend>' +
+        '<legend>' + esc(s.name) +
+          '<label class="qs-inline">Qs <input type="number" data-k="questions" inputmode="numeric" min="1" step="1" value="' + s.questions + '"' +
+          ' aria-label="Number of questions in ' + esc(s.name) + '"></label></legend>' +
         '<div class="grid3x">' +
-          numInput('correct', 'Correct', { max: s.questions }) +
-          numInput('wrong', 'Wrong', { max: s.questions }) +
-          numInput('unseen', 'Unseen', { max: s.questions }) +
+          numInput('correct', 'Correct') +
+          numInput('wrong', 'Wrong') +
+          numInput('unseen', 'Unseen') +
         '</div>' +
         '<div class="grid3x">' +
           numInput('cutoff', 'Cut-off', { decimal: true }) +
@@ -795,7 +833,8 @@
       const name = card.dataset.section;
       const s = (values.sections || []).find((x) => x.section === name);
       if (s) {
-        ['correct', 'wrong', 'unseen', 'cutoff', 'good_min', 'good_max'].forEach((k) => {
+        ['questions', 'correct', 'wrong', 'unseen', 'cutoff', 'good_min', 'good_max'].forEach((k) => {
+          if (k === 'questions' && !s.questions) return;
           const inp = $('[data-k="' + k + '"]', card);
           inp.value = s[k] === null || s[k] === undefined ? '' : s[k];
         });
@@ -835,7 +874,8 @@
       topics: [],
     };
     $$('.sec-card').forEach((card) => {
-      const s = { section: card.dataset.section, questions: Number(card.dataset.questions) };
+      const qs = Number($('[data-k="questions"]', card).value);
+      const s = { section: card.dataset.section, questions: qs > 0 ? qs : Number(card.dataset.questions) };
       ['correct', 'wrong', 'unseen', 'cutoff', 'good_min', 'good_max'].forEach((k) => { s[k] = $('[data-k="' + k + '"]', card).value; });
       ['time_sec', 'time_correct_sec', 'time_wrong_sec', 'time_skipped_sec'].forEach((k) => { s[k] = getTime(card, k); });
       exam.sections.push(s);
@@ -902,6 +942,7 @@
     $('#formErrors').hidden = true;
     f.elements.date.value = todayISO();
     f.elements.exam_type.value = CFG.DEFAULT_EXAM_TYPE;
+    $('#customSections').dataset.forType = ''; // rebuild the section tick boxes for a fresh form
     f.elements.pin.value = store.get(KEYS.pin) || '';
     if (values) fillMeta(values);
     buildSectionBlocks(f.elements.exam_type.value, values);
@@ -912,7 +953,7 @@
     ['date', 'mock_name', 'cutoff', 'percentile', 'average_score', 'rank', 'total_takers', 'notes'].forEach((k) => {
       if (values[k] !== undefined) f.elements[k].value = values[k] === null ? '' : values[k];
     });
-    if (values.exam_type && CFG.EXAM_TYPES.some((t) => t.name === values.exam_type)) f.elements.exam_type.value = values.exam_type;
+    if (values.exam_type) f.elements.exam_type.value = values.exam_type;
     f.elements.incomplete.checked = values.incomplete === true;
   }
 
@@ -1001,9 +1042,17 @@
 
   function initForm() {
     const f = form();
-    f.elements.exam_type.innerHTML = CFG.EXAM_TYPES.map((t) => '<option>' + esc(t.name) + '</option>').join('');
+    renderExamTypeList();
 
     f.addEventListener('submit', onSubmit);
+    // Ticking/unticking sections of a new exam type rebuilds the section cards (keeping typed values).
+    $('#customSectionChecks').addEventListener('change', () => {
+      buildSectionBlocks(f.elements.exam_type.value.trim(), readForm());
+    });
+    // Enter in the exam-type box confirms the type instead of submitting the form.
+    f.elements.exam_type.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') { ev.preventDefault(); ev.target.blur(); }
+    });
     f.addEventListener('input', (ev) => {
       if (ev.target.name === 'pin') ev.target.classList.remove('invalid');
       state.warnAck = false;
@@ -1013,7 +1062,7 @@
     });
     f.elements.exam_type.addEventListener('change', () => {
       const values = readForm();
-      buildSectionBlocks(f.elements.exam_type.value, values);
+      buildSectionBlocks(f.elements.exam_type.value.trim(), values);
     });
     const addTopic = (card) => {
       const inp = $('[data-new-topic]', card);

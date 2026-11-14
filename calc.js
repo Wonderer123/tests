@@ -70,6 +70,7 @@
     return String(name || '')
       .replace(/^IBPS RRB Officer Scale-I Prelims\s*/i, '')
       .replace(/^IBPS RRB Office Assistant Prelims\s*/i, '')
+      .replace(/^IBPS RRB PO Pre(lims)?\s*/i, '')
       .trim() || String(name || '');
   }
 
@@ -84,6 +85,39 @@
     const type = (config.EXAM_TYPES || []).find((t) => t.name === examType);
     const def = type && type.sections.find((s) => s.name === sectionName);
     return def || null;
+  }
+
+  /** Every section the forms can offer for a new exam type (config sections + EXTRA_SECTIONS). */
+  function allSections(config) {
+    const out = [];
+    const seen = {};
+    const add = (s) => {
+      if (seen[s.name]) return;
+      seen[s.name] = true;
+      out.push({ name: s.name, questions: s.questions || 40, marks: s.marks || 1, negative: s.negative !== undefined ? s.negative : 0.25 });
+    };
+    (config.EXAM_TYPES || []).forEach((t) => t.sections.forEach(add));
+    (config.EXTRA_SECTIONS || []).forEach(add);
+    return out;
+  }
+
+  /**
+   * Work out the sections of an exam type by name:
+   *   'config'  – listed in config.js EXAM_TYPES
+   *   'history' – typed before; reuse the sections of its latest saved mock
+   *   'custom'  – brand new; the form asks which sections it has
+   */
+  function resolveExamType(config, name, exams) {
+    const t = (config.EXAM_TYPES || []).find((x) => x.name === name);
+    if (t) return { source: 'config', sections: t.sections.map((s) => Object.assign({}, s)) };
+    const prev = (exams || []).filter((e) => e.exam_type === name && e.sections && e.sections.length).slice(-1)[0];
+    if (prev) {
+      return {
+        source: 'history',
+        sections: prev.sections.map((s) => ({ name: s.section, questions: num(s.questions) || 40, marks: 1, negative: 0.25 })),
+      };
+    }
+    return { source: 'custom', sections: [] };
   }
 
   /**
@@ -467,7 +501,7 @@
 
   const Calc = {
     num, round, ratio, sum, fmtTime, fmtScore, fmtPct, fmtDate, shortMockName, newExamId,
-    sectionDef, normalizeExam, validateExam, buildModel, enrichExam, filterExams, kpis,
+    sectionDef, allSections, resolveExamType, normalizeExam, validateExam, buildModel, enrichExam, filterExams, kpis,
     numberWithinDay, axisLabels, dayLabel,
     sectionNames, attemptGap, topicStats, markLeaks, toCSV, toBackup,
   };

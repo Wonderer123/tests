@@ -174,8 +174,14 @@
               <input type="date" name="date" required>
             </label>
             <label>Exam type
-              <select name="exam_type" id="examType"></select>
+              <input type="text" name="exam_type" id="examType" list="examTypes" maxlength="100"
+                     placeholder="pick or type new">
+              <datalist id="examTypes"></datalist>
             </label>
+          </div>
+          <div id="customSections" class="custom-secs" hidden>
+            <p class="small"><b>New exam type.</b> Tick the sections it has:</p>
+            <div id="customSectionChecks" class="chips-check"></div>
           </div>
           <label>Mock name
             <input type="text" name="mock_name" required maxlength="200"

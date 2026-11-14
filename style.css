@@ -382,6 +382,31 @@ input.invalid { outline: 2px solid var(--danger); }
 .grid3 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; }
 @media (min-width: 560px) { .grid3 { grid-template-columns: 1fr 1fr 1fr; } }
 
+.custom-secs {
+  background: var(--warn-soft);
+  border-radius: 10px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+.custom-secs p { margin: 0 0 6px; }
+.chips-check { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.chips-check label { margin: 0; }
+legend .qs-inline {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  margin: 0 0 0 6px;
+  font-size: .78rem;
+  font-weight: 500;
+}
+legend .qs-inline input {
+  width: 58px;
+  min-height: 30px;
+  padding: 3px 6px;
+  font-size: 14px;
+  text-align: center;
+}
 .sec-card .grid3x { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 8px; }
 .timepair { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .timepair input { text-align: center; }

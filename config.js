@@ -9,11 +9,14 @@ window.APP_CONFIG = {
   // Google Apps Script web app URL (ends in /exec). Leave empty for demo mode.
   SCRIPT_URL: '',
 
-  // Exam type selected by default in the "Add" form.
+  // Exam type pre-selected in the forms, and the dashboard's default filter
+  // (so 40-mark sectional tests aren't mixed into the 80-mark mock trend).
   DEFAULT_EXAM_TYPE: 'IBPS RRB PO Prelims',
 
   // Each exam type lists its sections in the order Guidely shows them.
   // questions × marks = max score. negative = marks deducted per wrong answer.
+  // The forms also accept any NEW type name: you tick its sections, and the
+  // number of questions can be changed per mock.
   EXAM_TYPES: [
     {
       name: 'IBPS RRB PO Prelims',
@@ -21,6 +24,14 @@ window.APP_CONFIG = {
         { name: 'Reasoning Ability', questions: 40, marks: 1, negative: 0.25 },
         { name: 'Quantitative Aptitude', questions: 40, marks: 1, negative: 0.25 },
       ],
+    },
+    {
+      name: 'RRB PO Sectional – Quant',
+      sections: [{ name: 'Quantitative Aptitude', questions: 40, marks: 1, negative: 0.25 }],
+    },
+    {
+      name: 'RRB PO Sectional – Reasoning',
+      sections: [{ name: 'Reasoning Ability', questions: 40, marks: 1, negative: 0.25 }],
     },
     {
       name: 'IBPS RRB Clerk Prelims',
@@ -45,6 +56,12 @@ window.APP_CONFIG = {
         { name: 'Reasoning Ability', questions: 35, marks: 1, negative: 0.25 },
       ],
     },
+  ],
+
+  // Extra sections offered when typing a new exam type (e.g. a Mains mock).
+  EXTRA_SECTIONS: [
+    { name: 'General Awareness', questions: 40, marks: 1, negative: 0.25 },
+    { name: 'Computer Knowledge', questions: 20, marks: 1, negative: 0.25 },
   ],
 
   // Short labels used on charts and small screens.
