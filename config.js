@@ -9,14 +9,17 @@ window.APP_CONFIG = {
   // Google Apps Script web app URL (ends in /exec). Leave empty for demo mode.
   SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbyylbtAB2OZSg81xcTKlHf6H2bO_bdJ08bL5sHyRzxF6YcNsM_EH66ipxiznN0COdE8mg/exec',
 
-  // Exam type pre-selected in the forms, and the dashboard's default filter
-  // (so 40-mark sectional tests aren't mixed into the 80-mark mock trend).
+  // Exam type pre-selected in the forms, and the dashboard's default filter.
   DEFAULT_EXAM_TYPE: 'IBPS RRB PO Prelims',
 
   // Each exam type lists its sections in the order Guidely shows them.
   // questions × marks = max score. negative = marks deducted per wrong answer.
   // The forms also accept any NEW type name: you tick its sections, and the
   // number of questions can be changed per mock.
+  //
+  // partOf marks a sectional test: it is left out of the full-mock score
+  // trend (a 40-mark test would look like a crash there) but counted in the
+  // dashboard's Sections and Topics views of the exam it belongs to.
   EXAM_TYPES: [
     {
       name: 'IBPS RRB PO Prelims',
@@ -27,10 +30,12 @@ window.APP_CONFIG = {
     },
     {
       name: 'RRB PO Sectional – Quant',
+      partOf: 'IBPS RRB PO Prelims',
       sections: [{ name: 'Quantitative Aptitude', questions: 40, marks: 1, negative: 0.25 }],
     },
     {
       name: 'RRB PO Sectional – Reasoning',
+      partOf: 'IBPS RRB PO Prelims',
       sections: [{ name: 'Reasoning Ability', questions: 40, marks: 1, negative: 0.25 }],
     },
     {

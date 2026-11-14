@@ -62,14 +62,21 @@ Open the site on a computer → **History → Import backup (JSON)…** → choo
 - **Topic-wise:** copy Guidely's "Know Your Strength & Weakness" table. For each topic, enter
   total questions (all boxes), correct (green) and wrong (red). The form checks the totals add up.
 - **Incomplete attempt:** tick it for a mock abandoned early. It stays in History but is left out of the stats.
-- **Edit / Delete:** in History.
+- **Dashboard:** three short tabs. *Overview* shows the latest mock, the score/percentile trend and
+  what to work on. *Sections* shows one section at a time (score, attempts vs good range, time split).
+  *Topics* lists where marks are lost and every topic's score. Under each chart, *Show numbers* gives the same data as a table.
+- **Sectional tests:** saved with a sectional exam type (e.g. *RRB PO Sectional – Quant*). They stay out of
+  the full-mock score trend, but count in *Sections* and *Topics* (marked ◇), since a 40-mark Quant
+  sectional compares directly with the Quant section of a mock. Filters → untick to leave them out.
+- **Edit / Delete:** in History. Tap a mock to open it.
 - **Backup:** History → *Download backup (JSON)* (can be re-imported) or *Download CSV*.
 
 ## Changing things
 
 - **New kind of test (sectional, mains…):** just type a new exam type name in the form and tick its
-  sections; the number of questions per section can be changed per mock. The dashboard filters by
-  exam type and opens on `DEFAULT_EXAM_TYPE`, so 40-mark sectionals don't mix into 80-mark mock trends.
+  sections; the number of questions per section can be changed per mock. The dashboard opens on
+  `DEFAULT_EXAM_TYPE`. In `config.js`, `partOf` marks a type as a sectional of a full exam; a typed
+  type with a single section is treated as a sectional too.
 - **Exam types, sections, topics, thresholds:** edit `config.js` and push. Existing data keeps working.
 - **Change the PIN:** Apps Script → Project Settings → Script Properties.
 - **After editing `Code.gs`:** **Deploy → Manage deployments → ✏️ Edit → Version: New version → Deploy.**

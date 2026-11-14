@@ -71,6 +71,8 @@
       .replace(/^IBPS RRB Officer Scale-I Prelims\s*/i, '')
       .replace(/^IBPS RRB Office Assistant Prelims\s*/i, '')
       .replace(/^IBPS RRB PO Pre(lims)?\s*/i, '')
+      .replace(/Quantitative Aptitude/i, 'Quant')
+      .replace(/Reasoning Ability/i, 'Reasoning')
       .trim() || String(name || '');
   }
 
@@ -250,20 +252,27 @@
   }
 
   /**
-   * Chart axis labels. The date is printed once, under the first mock of the
-   * day; when there were several mocks that day each also gets its order
-   * (1, 2, 3…) on a second line:   12 Nov   13 Nov    ·     ·    14 Nov
-   *                                          1       2     3      1
+   * Chart axis labels, short enough for a phone. The first mock of a day shows
+   * the day of the month; further mocks that day show a dot. The month is
+   * printed underneath only where it changes:
+   *     30   10   ·    ·   12   13   ·   ·
+   *     Oct  Nov
+   * The tooltip carries the full name and "mock 2 of 3".
    */
   function axisLabels(list) {
-    const counts = {};
-    list.forEach((e) => { counts[e.date] = (counts[e.date] || 0) + 1; });
-    const seen = {};
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    let prevDate = null;
+    let prevMonth = null;
     return list.map((e) => {
-      seen[e.date] = (seen[e.date] || 0) + 1;
-      const first = seen[e.date] === 1;
-      if (counts[e.date] === 1) return [fmtDate(e.date), ''];
-      return [first ? fmtDate(e.date) : '', String(seen[e.date])];
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(e.date || ''));
+      if (!m) return [String(e.date || ''), ''];
+      const sameDay = e.date === prevDate;
+      prevDate = e.date;
+      if (sameDay) return ['·', ''];
+      const month = m[1] + m[2];
+      const showMonth = month !== prevMonth;
+      prevMonth = month;
+      return [String(Number(m[3])), showMonth ? months[Number(m[2]) - 1] : ''];
     });
   }
 
@@ -338,6 +347,93 @@
     return out;
   }
 
+  /**
+   * Is this a full mock or a sectional test, and which exam does it belong to?
+   *   { sectional: false, family: 'IBPS RRB PO Prelims' }   full mock
+   *   { sectional: true,  family: 'IBPS RRB PO Prelims' }   type has partOf in config.js
+   *   { sectional: true,  family: null }                    unknown one-section type
+   */
+  function examKind(e, config) {
+    const def = ((config && config.EXAM_TYPES) || []).find((t) => t.name === e.exam_type);
+    if (def && def.partOf) return { sectional: true, family: def.partOf };
+    if (!def && e.sections && e.sections.length === 1) return { sectional: true, family: null };
+    return { sectional: false, family: e.exam_type };
+  }
+
+  /**
+   * What the dashboard shows for the given filters.
+   *   full     – full mocks of the chosen exam type: score trend, percentile, headline numbers
+   *   combined – those plus sectional tests of the same exam (oldest → newest):
+   *              section and topic analysis, where a 40-mark Quant sectional is
+   *              exactly comparable with the Quant section of a full mock
+   * "Last N" picks the last N full mocks; sectionals from that same period are kept,
+   * so every view covers the same stretch of time.
+   * f = { type, from, to, lastN, includeIncomplete, includeSectionals (default true) }
+   */
+  function dashboardData(exams, f, config) {
+    f = f || {};
+    const inDates = exams.filter((e) => (!f.from || e.date >= f.from) && (!f.to || e.date <= f.to));
+    const base = inDates.filter((e) => f.includeIncomplete || !e.incomplete);
+    const kinds = new Map(exams.map((e) => [e, examKind(e, config)]));
+    const isFull = (e) => !kinds.get(e).sectional && (!f.type || e.exam_type === f.type);
+    const isSec = (e) => f.includeSectionals !== false && kinds.get(e).sectional &&
+      (!f.type || kinds.get(e).family === f.type);
+    let full = base.filter(isFull);
+    let sectionals = base.filter(isSec);
+    if (f.lastN > 0) {
+      if (full.length > f.lastN) {
+        full = full.slice(-f.lastN);
+        const start = full[0];
+        const startIdx = exams.indexOf(start);
+        sectionals = sectionals.filter((e) => exams.indexOf(e) > startIdx);
+      } else if (!full.length) {
+        sectionals = sectionals.slice(-f.lastN);
+      }
+    }
+    const keep = new Set(full.concat(sectionals));
+    const combined = exams.filter((e) => keep.has(e));
+    const hiddenIncomplete = inDates.filter((e) => e.incomplete && !f.includeIncomplete && (isFull(e) || isSec(e))).length;
+    return { full, sectionals, combined, hiddenIncomplete };
+  }
+
+  /** Every attempt at one section across the given exams: [{ exam, sec, sectional }] oldest → newest. */
+  function sectionEntries(exams, name, config) {
+    const out = [];
+    exams.forEach((e) => {
+      const s = e.sections.find((x) => x.section === name);
+      if (s) out.push({ exam: e, sec: s, sectional: examKind(e, config).sectional });
+    });
+    return out;
+  }
+
+  /** Averages for one section, from sectionEntries(). */
+  function sectionSummary(entries) {
+    const n = entries.length;
+    if (!n) return { count: 0 };
+    const S = entries.map((x) => x.sec);
+    const attempted = sum(S, (s) => s.attempted);
+    const withCut = S.filter((s) => s.cutoff !== null && s.score !== null);
+    const withGood = S.filter((s) => s.good_min !== null);
+    const withSplit = S.filter((s) => s.time_correct_sec !== null);
+    const last = S[n - 1];
+    return {
+      count: n,
+      avgScore: round(sum(S, (s) => s.score || 0) / n, 2),
+      maxScore: last.max_score,
+      accuracy: ratio(sum(S, (s) => s.correct), attempted),
+      avgAttempted: round(attempted / n, 1),
+      avgUnseen: round(sum(S, (s) => s.unseen) / n, 1),
+      cleared: withCut.filter((s) => s.score >= s.cutoff).length,
+      cutChecked: withCut.length,
+      belowGood: withGood.filter((s) => s.attempted < s.good_min).length,
+      goodChecked: withGood.length,
+      avgWastedSec: withSplit.length
+        ? round(sum(withSplit, (s) => (s.time_wrong_sec || 0) + (s.time_skipped_sec || 0)) / withSplit.length, 0)
+        : null,
+      sectionalCount: entries.filter((x) => x.sectional).length,
+    };
+  }
+
   // ---------- dashboard aggregates ----------
 
   function kpis(exams) {
@@ -360,6 +456,63 @@
       accuracy: ratio(sum(exams, (e) => e.correct), attempted),
       clearedCount: exams.filter((e) => e.margin !== null && e.margin >= 0).length,
     };
+  }
+
+  /** Mean of the finite values fn(x) returns, or null when there are none. */
+  function meanOf(arr, fn) {
+    const v = arr.map(fn).filter((x) => x !== null && x !== undefined && Number.isFinite(x));
+    return v.length ? sum(v) / v.length : null;
+  }
+
+  /**
+   * Mocks are judged by trend, not one-to-one: "recent form" is the average of
+   * the last k mocks, compared with the average of every mock in view.
+   * The verdict uses percentile when available (fair across easy and hard
+   * papers), otherwise marks:
+   *   'up'   recent percentile ≥ 5 points (or marks ≥ 2) above the whole-period average
+   *   'down' the same amount below
+   *   'flat' in between
+   *   null   not enough mocks beyond the recent window to compare
+   */
+  function recentForm(exams, k) {
+    k = k || 5;
+    const n = exams.length;
+    if (!n) return { count: 0 };
+    const recent = exams.slice(-k);
+    const comparable = n > recent.length;
+    const recentAvg = meanOf(recent, (e) => e.score);
+    const allAvg = meanOf(exams, (e) => e.score);
+    const recentPct = meanOf(recent, (e) => e.percentile);
+    const allPct = meanOf(exams, (e) => e.percentile);
+    const delta = comparable && recentAvg !== null && allAvg !== null ? recentAvg - allAvg : null;
+    const pctDelta = comparable && recentPct !== null && allPct !== null ? recentPct - allPct : null;
+    let verdict = null;
+    if (pctDelta !== null) verdict = pctDelta >= 5 ? 'up' : pctDelta <= -5 ? 'down' : 'flat';
+    else if (delta !== null) verdict = delta >= 2 ? 'up' : delta <= -2 ? 'down' : 'flat';
+    return {
+      count: n,
+      recentCount: recent.length,
+      recentAvg: round(recentAvg, 2),
+      allAvg: round(allAvg, 2),
+      delta: round(delta, 2),
+      recentPct: round(recentPct, 1),
+      allPct: round(allPct, 1),
+      pctDelta: round(pctDelta, 1),
+      verdict,
+      recentGap: round(meanOf(recent, (e) => e.margin), 2),
+      recentCleared: recent.filter((e) => e.margin !== null && e.margin >= 0).length,
+      recentMax: recent[recent.length - 1].max_score,
+    };
+  }
+
+  /** Average of the current value and up to k−1 before it (gaps skipped): the trend line on charts. */
+  function rollingAvg(values, k) {
+    k = k || 5;
+    return values.map((_, i) => {
+      if (values[i] === null || values[i] === undefined) return null;
+      const m = meanOf(values.slice(Math.max(0, i - k + 1), i + 1), (x) => x);
+      return m === null ? null : round(m, 2);
+    });
   }
 
   /** Section names in the order they first appear across the given exams. */
@@ -398,12 +551,16 @@
         m.hits.push({ seq: e.seq, total: t.total_qs, correct: t.correct, wrong: t.wrong });
       });
     });
-    const nExams = exams.length || 1;
+    // "Per mock" means per mock that had this topic's section, so a Quant
+    // sectional test doesn't dilute the numbers for Reasoning topics.
+    const perSection = {};
+    exams.forEach((e) => e.sections.forEach((s) => { perSection[s.section] = (perSection[s.section] || 0) + 1; }));
     const weakBelow = config.WEAK_BELOW;
     const strongAbove = config.STRONG_ABOVE;
     const minMocks = config.MIN_MOCKS_FOR_PATTERN;
     return Object.keys(map).map((k) => {
       const m = map[k];
+      const nExams = perSection[m.section] || m.hits.length || 1;
       const total = sum(m.hits, (h) => h.total);
       const correct = sum(m.hits, (h) => h.correct);
       const wrong = sum(m.hits, (h) => h.wrong);
@@ -436,8 +593,9 @@
         attemptRate: ratio(attempted, total),   // how much of the topic she attempts
         accuracy: ratio(correct, attempted),    // correct ÷ attempted
         perMock: total / mocks,                 // average questions per mock it appears in
-        // Questions not scored, averaged over ALL mocks shown, so a topic that
-        // appeared once doesn't outrank one that leaks marks every time.
+        // Questions not scored, averaged over ALL mocks shown (that had this
+        // section), so a topic that appeared once doesn't outrank one that
+        // leaks marks every time.
         lostPerMock: (total - correct) / nExams,
         examsInView: nExams,
         trend,
@@ -503,6 +661,7 @@
     num, round, ratio, sum, fmtTime, fmtScore, fmtPct, fmtDate, shortMockName, newExamId,
     sectionDef, allSections, resolveExamType, normalizeExam, validateExam, buildModel, enrichExam, filterExams, kpis,
     numberWithinDay, axisLabels, dayLabel,
+    examKind, dashboardData, sectionEntries, sectionSummary, recentForm, rollingAvg,
     sectionNames, attemptGap, topicStats, markLeaks, toCSV, toBackup,
   };
 

@@ -2,6 +2,7 @@
 
 # Guidely screenshots (show username / email) and working notes
 test*/
+[0-9][0-9]-[0-9][0-9]-[0-9][0-9][0-9][0-9]*/
 _reference*/
 *.png
 *.jpg

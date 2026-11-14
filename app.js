@@ -46,6 +46,7 @@
     readPin: 'mt_read_pin',   // '1' if the server requires the PIN to read
     filters: 'mt_filters_v1',
     draft: 'mt_draft_v1',     // unsaved "Add mock" form
+    pane: 'mt_dash_pane',     // last dashboard sub-tab
   };
 
   function cssVar(name) {
@@ -132,19 +133,36 @@
   // =========================================================================
   // 2. State
   // =========================================================================
-  // Default to the main exam type so 40-mark sectional tests don't distort the 80-mark mock trends.
-  const defaultFilters = { type: CFG.DEFAULT_EXAM_TYPE, from: '', to: '', lastN: 0, includeIncomplete: false };
+  // Default to the main exam. Its sectional tests are counted in Sections & Topics, not in the score trend.
+  const defaultFilters = { type: CFG.DEFAULT_EXAM_TYPE, from: '', to: '', lastN: 0, includeIncomplete: false, includeSectionals: true };
+
+  /** Saved filters from older versions: a sectional type becomes its exam; unknown "last N" becomes All. */
+  function normalizeFilters(saved) {
+    const f = Object.assign({}, defaultFilters, saved || {});
+    const def = CFG.EXAM_TYPES.find((t) => t.name === f.type);
+    if (def && def.partOf) f.type = def.partOf;
+    f.lastN = Number(f.lastN) || 0;
+    if ([0, 5, 10].indexOf(f.lastN) < 0) f.lastN = 0;
+    return f;
+  }
   const state = {
     demo: !CFG.SCRIPT_URL,
     exams: [],          // full model (oldest → newest), from Calc.buildModel
-    filtered: [],       // exams currently shown on the dashboard
+    filtered: [],       // full mocks currently shown on the dashboard
+    dash: null,         // Calc.dashboardData() for the current filters
     loaded: false,
     view: 'dashboard',
-    filters: Object.assign({}, defaultFilters, store.getJSON(KEYS.filters) || {}),
-    attemptSection: null,
-    timeView: 'split',
+    pane: store.get(KEYS.pane) || 'overview',
+    filters: normalizeFilters(store.getJSON(KEYS.filters)),
+    trendView: 'score',     // overview chart: 'score' | 'pct'
+    secName: null,          // section shown in the Sections pane
+    secEntries: [],
+    secMetric: 'score',     // 'score' | 'attempts' | 'time'
     topicSection: '',
-    topicSort: { key: 'rate', dir: 1 },
+    topicOrder: 'weak',     // 'weak' | 'strong' | 'freq'
+    openTopics: new Set(),
+    topicsAll: false,       // show every topic instead of the first 10
+    openHistory: new Set(),
     editingId: null,
     formExamId: null,   // id for the exam being added (stable across retries)
     warnAck: false,     // user has seen topic-total warnings and can "save anyway"
@@ -299,30 +317,55 @@
   }
 
   // =========================================================================
-  // 6. Dashboard
+  // 6. Dashboard: three short panes (Overview · Sections · Topics) instead of
+  //    one long page, so each fits a phone screen or two.
   // =========================================================================
+  const PANES = ['overview', 'sections', 'topics'];
+  const reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+
+  /** Exams that can be picked as "the exam": full-mock types (sectional types belong to one of these). */
+  function fullExamTypes() {
+    const names = [];
+    const add = (n) => { if (n && names.indexOf(n) < 0) names.push(n); };
+    CFG.EXAM_TYPES.filter((t) => !t.partOf).forEach((t) => add(t.name));
+    state.exams.filter((e) => !C.examKind(e, CFG).sectional).forEach((e) => add(e.exam_type));
+    return names;
+  }
+
+  function filtersAreDefault() {
+    const f = state.filters;
+    return f.type === CFG.DEFAULT_EXAM_TYPE && !f.from && !f.to && !f.includeIncomplete && f.includeSectionals !== false;
+  }
+
   function renderFilterOptions() {
-    const types = Array.from(new Set(CFG.EXAM_TYPES.map((t) => t.name).concat(state.exams.map((e) => e.exam_type)))).filter(Boolean);
-    const sel = $('#fType');
-    const cur = state.filters.type;
-    sel.innerHTML = '<option value="">All exam types</option>' +
-      types.map((t) => '<option' + (t === cur ? ' selected' : '') + '>' + esc(t) + '</option>').join('');
-    $('#fLastN').value = String(state.filters.lastN || 0);
-    $('#fFrom').value = state.filters.from || '';
-    $('#fTo').value = state.filters.to || '';
-    $('#fIncomplete').checked = !!state.filters.includeIncomplete;
+    const f = state.filters;
+    const types = fullExamTypes();
+    if (f.type && types.indexOf(f.type) < 0) types.push(f.type);
+    $('#fType').innerHTML = '<option value="">All exams</option>' +
+      types.map((t) => '<option' + (t === f.type ? ' selected' : '') + '>' + esc(t) + '</option>').join('');
+    $('#fFrom').value = f.from || '';
+    $('#fTo').value = f.to || '';
+    $('#fIncomplete').checked = !!f.includeIncomplete;
+    $('#fSectionals').checked = f.includeSectionals !== false;
+    $$('#rangePick button').forEach((b) => b.setAttribute('aria-pressed', String(Number(b.dataset.n) === (f.lastN || 0))));
+    $('#filterDot').hidden = filtersAreDefault();
+  }
+
+  function saveFilters() {
+    store.setJSON(KEYS.filters, state.filters);
+    renderFilterOptions();
+    renderDashboard();
   }
 
   function readFilters() {
-    state.filters = {
+    state.filters = Object.assign({}, state.filters, {
       type: $('#fType').value,
-      lastN: Number($('#fLastN').value) || 0,
       from: $('#fFrom').value,
       to: $('#fTo').value,
       includeIncomplete: $('#fIncomplete').checked,
-    };
-    store.setJSON(KEYS.filters, state.filters);
-    renderDashboard();
+      includeSectionals: $('#fSectionals').checked,
+    });
+    saveFilters();
   }
 
   function renderDashboard() {
@@ -336,27 +379,56 @@
     $('#dashBody').hidden = all.length === 0;
     if (!all.length) return;
 
-    const list = C.filterExams(all, state.filters);
-    state.filtered = list;
-    const hiddenIncomplete = state.filters.includeIncomplete ? 0
-      : C.filterExams(all, Object.assign({}, state.filters, { includeIncomplete: true })).length - C.filterExams(all, state.filters).length;
+    const d = C.dashboardData(all, state.filters, CFG);
+    state.dash = d;
+    state.filtered = d.full;
 
     const f = state.filters;
-    const parts = [f.type || 'All types'];
+    const parts = [f.type || 'All exams'];
     if (f.lastN) parts.push('last ' + f.lastN);
     if (f.from || f.to) parts.push((f.from ? C.fmtDate(f.from) : '…') + '–' + (f.to ? C.fmtDate(f.to) : '…'));
-    parts.push(list.length + ' mock' + (list.length === 1 ? '' : 's'));
+    parts.push(plural(d.full.length, 'mock') + (d.sectionals.length ? ' + ' + plural(d.sectionals.length, 'sectional') : ''));
     $('#filterSummary').textContent = parts.join(' · ');
 
-    renderKpis(list);
-    renderInsight(list, hiddenIncomplete);
-    renderCharts(list);
-    renderTopics(list);
+    $$('#dashTabs [role="tab"]').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.pane === state.pane)));
+    PANES.forEach((p) => { $('#pane-' + p).hidden = p !== state.pane; });
+
+    renderOverview(d);
+    renderSectionsPane(d);
+    renderTopics(d.combined);
+    renderPaneCharts();
   }
 
-  function kpiTile(label, valueHtml, subHtml) {
-    return '<div class="kpi"><div class="kpi-label">' + esc(label) + '</div><div class="kpi-value">' + valueHtml +
-      '</div>' + (subHtml ? '<div class="kpi-sub">' + subHtml + '</div>' : '') + '</div>';
+  function showPane(pane) {
+    if (PANES.indexOf(pane) < 0) pane = 'overview';
+    state.pane = pane;
+    store.set(KEYS.pane, pane);
+    $$('#dashTabs [role="tab"]').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.pane === pane)));
+    PANES.forEach((p) => { $('#pane-' + p).hidden = p !== pane; });
+    // Keep the sub-tabs in view: jump back up to them if the page was scrolled past.
+    const nav = $('#dashTabs');
+    const top = nav.getBoundingClientRect().top + window.scrollY - 4;
+    if (window.scrollY > top) window.scrollTo(0, top);
+    renderPaneCharts();
+  }
+
+  function plural(n, word) { return n + ' ' + word + (n === 1 ? '' : 's'); }
+
+  /** "Recent" = the last RECENT mocks; charts draw the same-length rolling average as the trend line. */
+  const RECENT = 5;
+
+  /** Section names in the order the exam lists them (as on Guidely), then any others. */
+  function orderedSections(list) {
+    const def = CFG.EXAM_TYPES.find((t) => t.name === (state.filters.type || CFG.DEFAULT_EXAM_TYPE));
+    const order = def ? def.sections.map((x) => x.name) : [];
+    const rank = (n) => (order.indexOf(n) < 0 ? 99 : order.indexOf(n));
+    return C.sectionNames(list).sort((a, b) => rank(a) - rank(b));
+  }
+
+  function tile(label, valueHtml, subHtml, cls) {
+    return '<div class="stat' + (cls ? ' ' + cls : '') + '"><div class="stat-label">' + esc(label) + '</div>' +
+      '<div class="stat-value">' + valueHtml + '</div>' +
+      (subHtml ? '<div class="stat-sub">' + subHtml + '</div>' : '') + '</div>';
   }
 
   function marginBadge(margin) {
@@ -366,183 +438,323 @@
       : '<span class="badge bad">' + signed(margin) + ' vs cut-off</span>';
   }
 
-  function renderKpis(list) {
-    const el = $('#kpis');
+  /** Cut-off status as icon + words, never colour alone. */
+  function cutoffBadge(e) {
+    if (e.margin === null) return '';
+    const m = C.round(Math.abs(e.margin), 2);
+    return e.margin >= 0
+      ? '<span class="badge good"><span aria-hidden="true">✓</span> Cleared cut-off' + (m ? ' by ' + m : '') + '</span>'
+      : '<span class="badge bad"><span aria-hidden="true">✕</span> ' + m + ' below cut-off</span>';
+  }
+
+  // ---------- Overview ----------
+  function renderOverview(d) {
+    const list = d.full;
+    const notes = [];
+    if (d.sectionals.length) {
+      notes.push(plural(d.sectionals.length, 'sectional test') + ' (out of 40) ' + (d.sectionals.length === 1 ? 'is' : 'are') +
+        ' left out of this chart but counted in <button type="button" class="link" data-pane-go="sections">Sections</button> and ' +
+        '<button type="button" class="link" data-pane-go="topics">Topics</button>.');
+    }
+    if (d.hiddenIncomplete) {
+      notes.push(plural(d.hiddenIncomplete, 'incomplete attempt') + ' hidden (see Filters).');
+    }
+    $('#overviewNote').innerHTML = notes.join(' ');
+
     if (!list.length) {
-      el.innerHTML = '<div class="card" style="grid-column:1/-1">No mocks match these filters.</div>';
+      $('#hero').innerHTML = '<p class="muted">No full mocks match these filters.</p>';
+      $('#stats').innerHTML = '';
+      $('#nextStep').hidden = true;
       return;
     }
     const k = C.kpis(list);
+    const F = C.recentForm(list, RECENT);
     const L = k.latest;
-    const ch = k.change;
-    el.innerHTML = [
-      kpiTile('Mocks taken', String(k.count),
-        k.clearedCount + ' cleared the cut-off'),
-      kpiTile('Latest score',
-        C.fmtScore(L.score) + '<span class="of"> / ' + C.fmtScore(L.max_score) + '</span>',
-        marginBadge(L.margin)),
-      kpiTile('Change vs previous',
-        ch === null ? '–' : '<span class="' + (ch > 0 ? 'up' : ch < 0 ? 'down' : '') + '">' + signed(ch) + '</span>',
-        ch === null ? 'needs 2 mocks' : 'marks'),
-      kpiTile('Average (last ' + k.avgLast5Count + ')', C.fmtScore(k.avgLast5),
-        k.avgPercentile5 !== null ? 'avg percentile ' + k.avgPercentile5 : ''),
-      kpiTile('Best score',
-        C.fmtScore(k.best.score) + '<span class="of"> / ' + C.fmtScore(k.best.max_score) + '</span>',
-        esc(C.shortMockName(k.best.mock_name))),
-      kpiTile('Accuracy', C.fmtPct(k.accuracy),
-        'correct ÷ attempted'),
+    const recentLabel = F.recentCount === F.count ? plural(F.count, 'mock') : 'last ' + F.recentCount + ' mocks';
+
+    let verdict = '';
+    if (F.verdict) {
+      const basis = F.pctDelta !== null
+        ? signed(F.pctDelta) + ' percentile vs all ' + F.count
+        : signed(F.delta) + ' marks vs all ' + F.count;
+      verdict = F.verdict === 'up'
+        ? '<span class="badge good"><span aria-hidden="true">▲</span> Improving · ' + basis + '</span>'
+        : F.verdict === 'down'
+          ? '<span class="badge bad"><span aria-hidden="true">▼</span> Slipping · ' + basis + '</span>'
+          : '<span class="badge neutral"><span aria-hidden="true">≈</span> Steady · ' + basis + '</span>';
+    }
+    let gap = '';
+    if (F.recentGap !== null) {
+      const g = C.round(Math.abs(F.recentGap), 1);
+      gap = F.recentGap >= 0
+        ? '<span class="badge good"><span aria-hidden="true">✓</span> ' + g + ' above cut-off on average</span>'
+        : '<span class="badge bad"><span aria-hidden="true">✕</span> ' + g + ' below cut-off on average</span>';
+    }
+    const meta = [];
+    if (F.recentPct !== null) meta.push('<b>' + F.recentPct + '</b> avg percentile' + (F.allPct !== null && F.recentCount < F.count ? ' (all: ' + F.allPct + ')' : ''));
+    meta.push('cleared <b>' + F.recentCleared + ' of ' + F.recentCount + '</b>');
+
+    $('#hero').innerHTML =
+      '<div class="hero-eyebrow">Recent form · ' + esc(recentLabel) + '</div>' +
+      '<div class="hero-main"><span class="hero-num">' + C.round(F.recentAvg, 1) + '</span>' +
+        '<span class="hero-of">/ ' + C.fmtScore(F.recentMax) + ' average</span></div>' +
+      '<div class="hero-badges">' + verdict + gap + '</div>' +
+      '<div class="hero-meta">' + meta.map((m) => '<span class="nw">' + m + '</span>').join('<span class="sep">·</span>') + '</div>' +
+      '<div class="hero-latest"><span class="muted">Latest</span> ' +
+        '<span class="hl-name">' + esc(C.shortMockName(L.mock_name)) + '</span>' +
+        '<span class="hl-score">' + C.fmtScore(L.score) + '<small>/' + C.fmtScore(L.max_score) + '</small></span>' +
+        '<span class="hl-meta">' + esc(C.dayLabel(L)) +
+          (L.margin !== null ? ' · <span class="' + (L.margin >= 0 ? 'up' : 'down') + '">' + signed(L.margin) + '</span> vs cut-off' : '') +
+          (L.percentile !== null ? ' · ' + C.round(L.percentile, 1) + ' %ile' : '') + '</span>' +
+      '</div>';
+
+    $('#stats').innerHTML = [
+      tile('Overall avg', String(C.round(F.allAvg, 1)), 'all ' + plural(F.count, 'mock')),
+      tile('Best', C.fmtScore(k.best.score), esc(C.fmtDate(k.best.date))),
+      tile('Cleared', k.clearedCount + '<span class="of"> / ' + k.count + '</span>', 'cut-offs'),
     ].join('');
+
+    renderNextStep(d);
   }
 
-  /** Plain-language summary: the single most useful paragraph on the page. */
-  function renderInsight(list, hiddenIncomplete) {
-    const el = $('#insight');
-    if (!list.length) { el.hidden = true; return; }
-    el.hidden = false;
+  /** "What to work on": one plain sentence plus the three topics losing the most marks. */
+  function renderNextStep(d) {
+    const el = $('#nextStep');
+    const full = d.full;
+    const comb = d.combined;
+    const k = C.kpis(comb);
+    const gap = C.attemptGap(comb);
     const lines = [];
-    const k = C.kpis(list);
-    const gap = C.attemptGap(list);
-    const n = list.length;
-    const avgUnseen = C.sum(list, (e) => e.unseen) / n;
-    const negLost = C.sum(list, (e) => C.sum(e.sections, (s) => (s.wrong || 0) * 0.25)) / n;
-
     if (gap.checked && gap.below / gap.checked >= 0.5) {
-      lines.push('Accuracy is <b>' + C.fmtPct(k.accuracy) + '</b>, but attempts were <b>below Guidely\'s "good attempts" range in ' +
-        gap.below + ' of ' + gap.checked + ' sections</b> (about ' + gap.avgShort + ' questions short each time). ' +
-        'Attempting more questions is the fastest way to raise the score.');
+      lines.push('Accuracy is <b>' + C.fmtPct(k.accuracy) + '</b>, but attempts fell short of Guidely\'s good range in <b>' +
+        gap.below + ' of ' + gap.checked + '</b> sections, by about ' + gap.avgShort + ' questions. Attempting more is the quickest way up.');
     } else if (k.accuracy !== null && k.accuracy < 0.85) {
-      lines.push('Accuracy is <b>' + C.fmtPct(k.accuracy) + '</b>. Wrong answers cost about <b>' + C.round(negLost, 2) +
-        ' marks per mock</b> in negative marking. Fewer guesses would help.');
+      const negLost = C.sum(comb, (e) => C.sum(e.sections, (s) => (s.wrong || 0) * 0.25)) / comb.length;
+      lines.push('Accuracy is <b>' + C.fmtPct(k.accuracy) + '</b>: wrong answers cost about <b>' + C.round(negLost, 1) +
+        ' marks</b> per mock. Fewer guesses would help.');
     } else if (gap.checked) {
-      lines.push('Attempts are within the good range in ' + (gap.checked - gap.below) + ' of ' + gap.checked +
+      lines.push('Attempts were in the good range in ' + (gap.checked - gap.below) + ' of ' + gap.checked +
         ' sections, with <b>' + C.fmtPct(k.accuracy) + '</b> accuracy. Keep it up.');
     }
+    const avgUnseen = full.length ? C.sum(full, (e) => e.unseen) / full.length : 0;
     if (avgUnseen >= 5) {
-      lines.push('On average <b>' + C.round(avgUnseen, 1) + ' questions per mock are never opened</b> because time runs out.');
+      lines.push('About <b>' + C.round(avgUnseen, 1) + ' questions</b> per mock are never opened: time runs out.');
     }
-    const leaks = C.markLeaks(C.topicStats(list, CFG), 3);
-    let focus = '';
-    if (leaks.length) {
-      focus = '<p><b>Focus next on:</b></p><ul>' + leaks.map((t) =>
-        '<li><b>' + esc(t.topic) + '</b>: ' + C.round(t.perMock, 1) + ' Qs per mock, only ' +
-        C.round(t.correct / t.mocks, 1) + ' scored on average</li>').join('') + '</ul>';
-    }
-    const note = hiddenIncomplete
-      ? '<p class="muted small">' + hiddenIncomplete + ' incomplete attempt' + (hiddenIncomplete > 1 ? 's are' : ' is') +
-        ' left out (see Filters).</p>'
-      : '';
-    el.innerHTML = '<h2>What the numbers say</h2>' + lines.map((l) => '<p>' + l + '</p>').join('') + focus + note;
+    const leaks = C.markLeaks(C.topicStats(comb, CFG), 3);
+    el.hidden = !lines.length && !leaks.length;
+    el.innerHTML = '<h2>What to work on</h2>' +
+      lines.map((l) => '<p>' + l + '</p>').join('') +
+      (leaks.length
+        ? '<ol class="mini-leaks">' + leaks.map((t) =>
+          '<li><span class="ml-name">' + esc(t.topic) + '<small>' + esc(shortSection(t.section)) + '</small></span>' +
+          '<span class="ml-val">−' + C.round(t.lostPerMock, 1) + '<small> marks/mock</small></span></li>').join('') + '</ol>' +
+          '<button type="button" class="link more" data-pane-go="topics">All topics →</button>'
+        : '');
   }
 
-  // ---------- charts ----------
+  // ---------- charts: shared pieces ----------
   function chartsAvailable() { return typeof window.Chart !== 'undefined'; }
 
   function makeChart(id, config) {
     if (state.charts[id]) state.charts[id].destroy();
-    const canvas = document.getElementById(id);
-    state.charts[id] = new window.Chart(canvas, config);
+    state.charts[id] = new window.Chart(document.getElementById(id), config);
   }
 
-  function tooltipTitle(items) {
-    const e = state.filtered[items[0].dataIndex];
-    return e ? [C.shortMockName(e.mock_name), C.dayLabel(e)] : '';
+  function setChartDefaults() {
+    window.Chart.defaults.color = cssVar('--muted');
+    window.Chart.defaults.borderColor = cssVar('--grid');
+    window.Chart.defaults.font.family = getComputedStyle(document.body).fontFamily;
   }
 
-  function baseOptions(yTitle) {
+  /** rows[i] is the exam (or {exam}) behind x position i; used for tooltip titles. */
+  function baseOptions(rows) {
+    const examAt = (i) => { const r = rows[i]; return r && (r.exam || r); };
     return {
       responsive: true,
       maintainAspectRatio: false,
+      animation: reduceMotion ? false : { duration: 350 },
       interaction: { mode: 'index', intersect: false },
+      layout: { padding: { top: 20, right: 8, left: 0 } },
       plugins: {
-        legend: { labels: { usePointStyle: true, boxWidth: 8, boxHeight: 8, font: { size: 11 } } },
-        tooltip: { callbacks: { title: tooltipTitle } },
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: cssVar('--tip-bg'),
+          titleColor: cssVar('--tip-ink'),
+          bodyColor: cssVar('--tip-ink'),
+          footerColor: cssVar('--tip-muted'),
+          titleFont: { weight: '600' },
+          footerFont: { weight: '400' },
+          padding: 10,
+          cornerRadius: 8,
+          boxPadding: 4,
+          boxWidth: 10,
+          boxHeight: 3,
+          caretSize: 5,
+          callbacks: {
+            title: (items) => {
+              const e = examAt(items[0].dataIndex);
+              return e ? C.shortMockName(e.mock_name) : '';
+            },
+            footer: (items) => {
+              const e = examAt(items[0].dataIndex);
+              return e ? C.dayLabel(e) : '';
+            },
+          },
+        },
       },
       scales: {
         x: {
           grid: { display: false },
-          // Keep date labels flat; only start skipping labels when there are many mocks.
-          ticks: { maxRotation: 0, autoSkip: state.filtered.length > 12, font: { size: 10 } },
+          border: { color: cssVar('--axis') },
+          ticks: { maxRotation: 0, autoSkip: rows.length > 24, autoSkipPadding: 6, font: { size: 11 }, padding: 4 },
         },
         y: {
           beginAtZero: true,
-          grid: { color: cssVar('--line') },
-          title: yTitle ? { display: true, text: yTitle, font: { size: 11 } } : undefined,
+          grid: { color: cssVar('--grid') },
+          border: { display: false },
+          ticks: { maxTicksLimit: 5, font: { size: 11 }, padding: 6 },
         },
       },
     };
   }
 
+  /** 2px line, 8px markers with a 2px ring in the card colour so they stay legible where lines cross. */
   function lineDs(label, data, color, extra) {
     return Object.assign({
-      type: 'line', label, data, borderColor: color, backgroundColor: color,
-      borderWidth: 2.5, pointRadius: 3.5, pointHoverRadius: 5, tension: 0.25, spanGaps: true,
+      type: 'line', label, data,
+      borderColor: color, backgroundColor: color,
+      borderWidth: 2, borderCapStyle: 'round', borderJoinStyle: 'round',
+      pointRadius: 4, pointHoverRadius: 6, pointBorderWidth: 2,
+      pointBackgroundColor: color, pointBorderColor: cssVar('--card'),
+      cubicInterpolationMode: 'monotone', spanGaps: true,
     }, extra || {});
   }
 
-  function renderCharts(list) {
-    const boxes = $$('.chart-box');
-    if (!chartsAvailable()) {
-      boxes.forEach((b) => { b.innerHTML = '<p class="muted small">Charts could not load (offline?). Reload to try again.</p>'; });
-      return;
-    }
-    window.Chart.defaults.color = cssVar('--muted');
-    window.Chart.defaults.borderColor = cssVar('--line');
-    window.Chart.defaults.font.family = getComputedStyle(document.body).fontFamily;
-
-    // X axis = dates; several mocks on one day get a second line "1", "2", "3"…
-    const labels = C.axisLabels(list);
-    const colors = [cssVar('--c1'), cssVar('--c2'), cssVar('--c3'), cssVar('--c4')];
-    const secNames = C.sectionNames(list);
-
-    // Score trend: score, cut-off, Guidely average
-    const maxScore = Math.max.apply(null, list.map((e) => e.max_score || 0).concat([10]));
-    const scoreOpts = baseOptions('Marks');
-    scoreOpts.scales.y.suggestedMax = maxScore;
-    makeChart('chartScore', {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [
-          lineDs('Score', list.map((e) => e.score), colors[0]),
-          lineDs('Cut-off', list.map((e) => e.cutoff), cssVar('--c-cut'), { borderDash: [6, 4], borderWidth: 2, pointRadius: 0, tension: 0 }),
-          lineDs('Avg of all takers', list.map((e) => e.average_score), cssVar('--c-avg'), { borderDash: [2, 3], borderWidth: 2, pointRadius: 2 }),
-        ],
-      },
-      options: scoreOpts,
-    });
-
-    // Percentile
-    const pctOpts = baseOptions('Percentile');
-    pctOpts.scales.y.max = 100;
-    pctOpts.plugins.legend.display = false;
-    makeChart('chartPct', {
-      type: 'line',
-      data: { labels, datasets: [lineDs('Percentile', list.map((e) => e.percentile), colors[2], { fill: false })] },
-      options: pctOpts,
-    });
-
-    // Section scores + sectional cut-offs
-    const secDs = [];
-    secNames.forEach((name, i) => {
-      const col = colors[i % colors.length];
-      const pick = (e, k) => { const s = e.sections.find((x) => x.section === name); return s ? s[k] : null; };
-      secDs.push(lineDs(shortSection(name), list.map((e) => pick(e, 'score')), col));
-      secDs.push(lineDs(shortSection(name) + ' cut-off', list.map((e) => pick(e, 'cutoff')), col,
-        { borderDash: [5, 4], borderWidth: 1.5, pointRadius: 0, tension: 0 }));
-    });
-    makeChart('chartSections', {
-      type: 'line',
-      data: { labels, datasets: secDs },
-      options: baseOptions('Marks'),
-    });
-
-    renderAttemptChart(list, secNames, labels, colors);
-    renderTimeChart(list, secNames, labels, colors);
+  /**
+   * Trend pair: every mock as a dot on a faint line (the ups and downs between
+   * easy and hard papers), plus a bold rolling average of the last RECENT
+   * mocks (the actual direction). Only the trend's end value is labelled.
+   */
+  function trendDs(label, values, color, pointExtra) {
+    return [
+      lineDs(label, values, cssVar('--c1-faint'), Object.assign({
+        order: 1, borderWidth: 1.5, pointRadius: 3.5, pointHoverRadius: 5,
+        pointBackgroundColor: color, cubicInterpolationMode: 'default', tension: 0,
+      }, pointExtra || {})),
+      lineDs(RECENT + '-mock average', C.rollingAvg(values, RECENT), color, {
+        order: 0, borderWidth: 2.5, pointRadius: 0, pointHoverRadius: 4,
+        endLabel: (v) => 'avg ' + C.round(v, 1),
+      }),
+    ];
   }
 
-  function renderSegButtons(container, names, current, onPick) {
-    container.innerHTML = names.map((n) =>
-      '<button type="button" data-v="' + esc(n) + '" aria-pressed="' + (n === current) + '">' + esc(n ? shortSection(n) : 'All') + '</button>'
+  /** Threshold line (cut-off): dashed, no markers. */
+  function cutDs(label, data) {
+    return lineDs(label, data, cssVar('--c-cut'), {
+      borderDash: [5, 4], borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 0, cubicInterpolationMode: 'default', tension: 0,
+    });
+  }
+
+  /** Writes the latest value just above the last point of datasets marked endLabel (one selective label, not one per point). */
+  const endLabelPlugin = {
+    id: 'endLabel',
+    afterDatasetsDraw(chart) {
+      const ctx = chart.ctx;
+      chart.data.datasets.forEach((ds, i) => {
+        if (!ds.endLabel || !chart.isDatasetVisible(i)) return;
+        let idx = -1;
+        for (let j = ds.data.length - 1; j >= 0; j--) {
+          if (ds.data[j] !== null && ds.data[j] !== undefined) { idx = j; break; }
+        }
+        const pt = chart.getDatasetMeta(i).data[idx];
+        if (!pt) return;
+        const text = ds.endLabel(ds.data[idx]);
+        ctx.save();
+        ctx.font = '650 12px ' + window.Chart.defaults.font.family;
+        ctx.fillStyle = cssVar('--text');
+        ctx.textBaseline = 'bottom';
+        const w = ctx.measureText(text).width;
+        ctx.textAlign = pt.x + w / 2 > chart.chartArea.right + 6 ? 'right' : 'center';
+        const x = ctx.textAlign === 'right' ? pt.x + 6 : pt.x;
+        // halo in the card colour keeps the label readable where it crosses a line or dot
+        ctx.lineJoin = 'round';
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = cssVar('--card');
+        ctx.strokeText(text, x, pt.y - 9);
+        ctx.fillText(text, x, pt.y - 9);
+        ctx.restore();
+      });
+    },
+  };
+
+  /** HTML legend: a key that mirrors the mark (line, dashed line, bar, band, hollow diamond). */
+  function legendHtml(items) {
+    return items.map((it) =>
+      '<span class="lg"><i class="key key-' + it.kind + '" style="--k:' + it.color + '"></i>' + esc(it.label) + '</span>'
+    ).join('');
+  }
+
+  /** The same numbers as the chart, as a small table (readable without hovering). */
+  function tableHtml(head, rows) {
+    return '<table class="mini"><thead><tr>' + head.map((h, i) => '<th' + (i > 1 ? ' class="num"' : '') + '>' + esc(h) + '</th>').join('') +
+      '</tr></thead><tbody>' + rows.map((r) => '<tr>' + r.map((c, i) => '<td' + (i > 1 ? ' class="num"' : '') + '>' + c + '</td>').join('') + '</tr>').join('') +
+      '</tbody></table>';
+  }
+
+  function renderPaneCharts() {
+    if (state.view !== 'dashboard' || !state.dash) return;
+    if (!chartsAvailable()) {
+      $$('.chart-box').forEach((b) => { b.innerHTML = '<p class="muted small">Charts could not load (offline?). Reload to try again.</p>'; });
+      return;
+    }
+    setChartDefaults();
+    if (state.pane === 'overview') renderTrendChart(state.dash.full);
+    if (state.pane === 'sections') renderSectionChart();
+  }
+
+  // ---------- Overview chart: score or percentile over time ----------
+  function renderTrendChart(list) {
+    $$('#trendPick button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.trend === state.trendView)));
+    const labels = C.axisLabels(list);
+    const opts = baseOptions(list);
+    const accent = cssVar('--c1');
+    const avgKey = { kind: 'line-bold', color: accent, label: RECENT + '-mock average' };
+    let datasets;
+    opts.plugins.tooltip.filter = (item) => item.parsed.y !== null;
+    opts.plugins.tooltip.callbacks.footer = (items) => {
+      const e = list[items[0].dataIndex];
+      return [C.dayLabel(e)].concat(e.average_score !== null ? ['Avg of all takers ' + C.fmtScore(e.average_score)] : []);
+    };
+    if (state.trendView === 'pct') {
+      $('#trendTitle').textContent = 'Percentile';
+      $('#trendLegend').innerHTML = legendHtml([{ kind: 'dotline', color: accent, label: 'Each mock' }, avgKey]);
+      opts.scales.y.max = 100;
+      opts.plugins.tooltip.callbacks.label = (ctx) => ' ' + ctx.dataset.label + ' ' + C.round(ctx.parsed.y, 1);
+      datasets = trendDs('Percentile', list.map((e) => e.percentile), accent);
+    } else {
+      $('#trendTitle').textContent = 'Score';
+      $('#trendLegend').innerHTML = legendHtml([
+        { kind: 'dotline', color: accent, label: 'Each mock' },
+        avgKey,
+        { kind: 'dash', color: cssVar('--c-cut'), label: 'Cut-off' },
+      ]);
+      opts.scales.y.suggestedMax = Math.max.apply(null, list.map((e) => e.max_score || 0).concat([10]));
+      opts.plugins.tooltip.callbacks.label = (ctx) => ' ' + ctx.dataset.label + ' ' + C.fmtScore(ctx.parsed.y);
+      datasets = trendDs('Score', list.map((e) => e.score), accent).concat([cutDs('Cut-off', list.map((e) => e.cutoff))]);
+    }
+    makeChart('chartTrend', { type: 'line', data: { labels, datasets }, options: opts, plugins: [endLabelPlugin] });
+
+    $('#trendTable').innerHTML = tableHtml(['Date', 'Mock', 'Score', 'Cut', 'Avg', '%ile'], list.slice().reverse().map((e) => [
+      esc(C.fmtDate(e.date)), esc(C.shortMockName(e.mock_name)), C.fmtScore(e.score),
+      e.cutoff === null ? '–' : C.fmtScore(e.cutoff), e.average_score === null ? '–' : C.fmtScore(e.average_score),
+      e.percentile === null ? '–' : C.round(e.percentile, 1),
+    ]));
+  }
+
+  // ---------- Sections pane ----------
+  function renderSegButtons(container, values, current, labelOf, onPick) {
+    container.innerHTML = values.map((v) =>
+      '<button type="button" data-v="' + esc(v) + '" aria-pressed="' + (v === current) + '">' + esc(labelOf(v)) + '</button>'
     ).join('');
     container.onclick = (ev) => {
       const b = ev.target.closest('button');
@@ -550,151 +762,230 @@
     };
   }
 
-  function renderAttemptChart(list, secNames, labels, colors) {
-    if (!secNames.length) return;
-    if (secNames.indexOf(state.attemptSection) < 0) state.attemptSection = secNames[0];
-    const name = state.attemptSection;
-    renderSegButtons($('#attemptSectionPick'), secNames, name, (v) => { state.attemptSection = v; renderDashboard(); });
-
-    const sec = list.map((e) => e.sections.find((s) => s.section === name) || null);
-    const band = cssVar('--c-band');
-    const opts = baseOptions('Questions');
-    opts.scales.y1 = {
-      position: 'right', min: 0, max: 100, grid: { drawOnChartArea: false },
-      ticks: { callback: (v) => v + '%' },
-    };
-    // Dataset 0 is the invisible lower edge of the band: hide it from legend and tooltip.
-    opts.plugins.legend.labels.filter = (item) => item.datasetIndex !== 0;
-    opts.plugins.tooltip.filter = (item) => item.datasetIndex !== 0 && item.parsed.y !== null;
-    opts.plugins.tooltip.callbacks.label = (ctx) => {
-      const s = sec[ctx.dataIndex];
-      if (ctx.datasetIndex === 1) return 'Good attempts: ' + s.good_min + '–' + s.good_max;
-      if (ctx.dataset.yAxisID === 'y1') return 'Accuracy: ' + C.round(ctx.parsed.y, 0) + '%';
-      return ctx.dataset.label + ': ' + ctx.parsed.y;
-    };
-    makeChart('chartAttempts', {
-      type: 'bar',
-      data: {
-        labels,
-        datasets: [
-          { type: 'line', label: 'Good attempts (from)', data: sec.map((s) => s && s.good_min), borderColor: 'transparent', backgroundColor: 'transparent', pointRadius: 0, fill: false, order: 3 },
-          { type: 'line', label: 'Good attempts range', data: sec.map((s) => s && s.good_max), borderColor: 'transparent', backgroundColor: band, pointRadius: 0, fill: '-1', order: 3 },
-          { type: 'bar', label: 'Attempted', data: sec.map((s) => s && s.attempted), backgroundColor: colors[0], borderRadius: 4, maxBarThickness: 28, order: 2 },
-          lineDs('Accuracy', sec.map((s) => (s && s.accuracy !== null ? s.accuracy * 100 : null)), colors[1], { yAxisID: 'y1', order: 1 }),
-        ],
-      },
-      options: opts,
+  function renderSectionsPane(d) {
+    const names = orderedSections(d.combined);
+    if (names.indexOf(state.secName) < 0) state.secName = names[0] || null;
+    renderSegButtons($('#secPick'), names, state.secName, shortSection, (v) => {
+      state.secName = v;
+      renderSectionsPane(state.dash);
+      renderPaneCharts();
     });
-  }
-
-  function renderTimeChart(list, secNames, labels, colors) {
-    const pick = $('#timePick');
-    $$('button', pick).forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.time === state.timeView)));
-    pick.onclick = (ev) => {
-      const b = ev.target.closest('button');
-      if (b) { state.timeView = b.dataset.time; renderDashboard(); }
-    };
-    const toMin = (s) => (s === null || s === undefined ? null : C.round(s / 60, 2));
-    let datasets;
-    if (state.timeView === 'split') {
-      const noSplit = list.some((e) => e.time_correct_sec === null);
-      datasets = [
-        { label: 'On correct answers', data: list.map((e) => toMin(e.time_correct_sec !== null ? e.time_correct_sec : e.utilized_sec)), backgroundColor: cssVar('--c-correct') },
-        { label: 'On wrong answers', data: list.map((e) => toMin(e.time_wrong_sec)), backgroundColor: cssVar('--c-wrong') },
-        { label: 'On skipped questions', data: list.map((e) => toMin(e.time_skipped_sec)), backgroundColor: cssVar('--c-skip') },
-      ];
-      if (noSplit) {
-        datasets.push({ label: 'Wasted (no split entered)', data: list.map((e) => (e.time_correct_sec === null ? toMin(e.wasted_sec) : null)), backgroundColor: cssVar('--c4') });
-      }
-    } else {
-      datasets = secNames.map((name, i) => ({
-        label: shortSection(name),
-        data: list.map((e) => { const s = e.sections.find((x) => x.section === name); return s ? toMin(s.time_sec) : null; }),
-        backgroundColor: colors[i % colors.length],
-      }));
+    const entries = state.secName ? C.sectionEntries(d.combined, state.secName, CFG) : [];
+    state.secEntries = entries;
+    const s = C.sectionSummary(entries);
+    if (!s.count) {
+      $('#secStats').innerHTML = '<p class="muted">No section data for these filters.</p>';
+      return;
     }
-    datasets.forEach((d) => { d.borderRadius = 3; d.maxBarThickness = 28; });
-    const opts = baseOptions('Minutes');
-    opts.scales.x.stacked = true;
-    opts.scales.y.stacked = true;
-    opts.plugins.tooltip.filter = (item) => item.parsed.y !== null && item.parsed.y !== undefined;
-    opts.plugins.tooltip.callbacks.label = (ctx) => ctx.dataset.label + ': ' + C.fmtTime(ctx.parsed.y * 60);
-    makeChart('chartTime', { type: 'bar', data: { labels, datasets }, options: opts });
+    const sub = s.sectionalCount ? plural(s.count - s.sectionalCount, 'mock') + ' + ' + plural(s.sectionalCount, 'sectional') : plural(s.count, 'mock');
+    $('#secStats').innerHTML = [
+      tile('Avg score', C.round(s.avgScore, 1) + '<span class="of"> / ' + C.fmtScore(s.maxScore) + '</span>',
+        s.cutChecked ? 'cleared cut-off ' + s.cleared + ' of ' + s.cutChecked : esc(sub)),
+      tile('Accuracy', C.fmtPct(s.accuracy), 'correct ÷ attempted'),
+      tile('Attempted', String(s.avgAttempted),
+        s.goodChecked ? 'short of good range ' + s.belowGood + ' of ' + s.goodChecked : 'per ' + (s.sectionalCount ? 'attempt' : 'mock')),
+      s.avgWastedSec !== null
+        ? tile('Time wasted', C.fmtTime(s.avgWastedSec), 'on wrong + skipped · ' + s.avgUnseen + ' never opened')
+        : tile('Never opened', String(s.avgUnseen), 'questions per attempt'),
+    ].join('');
   }
 
-  // ---------- topics ----------
-  function heatStyle(rate) {
-    if (rate === null) return '';
-    const hue = Math.round(Math.max(0, Math.min(1, rate)) * 120); // 0 = red, 120 = green
-    return 'background:hsla(' + hue + ',75%,45%,.22)';
+  function renderSectionChart() {
+    const E = state.secEntries || [];
+    $$('#secMetricPick button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.metric === state.secMetric)));
+    const canvasBox = $('#chartSection').parentElement;
+    canvasBox.hidden = !E.length;
+    if (!E.length) { $('#secLegend').innerHTML = ''; $('#secTable').innerHTML = ''; return; }
+
+    const exams = E.map((x) => x.exam);
+    const labels = C.axisLabels(exams);
+    const opts = baseOptions(E);
+    const accent = cssVar('--c1');
+    const surface = cssVar('--card');
+    const anySectional = E.some((x) => x.sectional);
+    const sectionalKey = anySectional ? [{ kind: 'diamond', color: accent, label: 'Sectional test' }] : [];
+    const metric = state.secMetric;
+    const maxQ = Math.max.apply(null, E.map((x) => x.sec.questions || 0).concat([10]));
+    let type = 'line';
+    let datasets;
+    let note = '';
+    const tipAfter = (ctx) => (E[ctx[0].dataIndex].sectional ? 'Sectional test' : '');
+    opts.plugins.tooltip.callbacks.afterTitle = tipAfter;
+
+    if (metric === 'attempts') {
+      type = 'bar';
+      $('#secChartTitle').textContent = 'Attempts';
+      note = 'Green = Guidely\'s "good attempts" range for that mock. Does the bar reach it?';
+      $('#secLegend').innerHTML = legendHtml([
+        { kind: 'bar', color: accent, label: 'Attempted' },
+        { kind: 'band', color: cssVar('--c-band-key'), label: 'Good range' },
+      ].concat(anySectional ? [{ kind: 'bar-hollow', color: accent, label: 'Sectional test' }] : []));
+      opts.scales.y.suggestedMax = maxQ;
+      opts.plugins.tooltip.filter = (item) => item.raw !== null && item.raw !== undefined;
+      opts.plugins.tooltip.callbacks.label = (ctx) => {
+        const s = E[ctx.dataIndex].sec;
+        if (ctx.datasetIndex === 0) return ' Good range ' + s.good_min + '–' + s.good_max;
+        return ' Attempted ' + s.attempted + ' · accuracy ' + C.fmtPct(s.accuracy);
+      };
+      // The good range is a floating bar [from, to] drawn behind a narrower attempts bar at the same x.
+      datasets = [
+        {
+          type: 'bar', label: 'Good range', order: 2, grouped: false,
+          data: E.map((x) => (x.sec.good_min !== null && x.sec.good_max !== null ? [x.sec.good_min, x.sec.good_max] : null)),
+          backgroundColor: cssVar('--c-band-key'), borderRadius: 3, borderSkipped: false,
+          maxBarThickness: 24, categoryPercentage: 0.8, barPercentage: 1,
+        },
+        {
+          type: 'bar', label: 'Attempted', order: 1, grouped: false,
+          data: E.map((x) => x.sec.attempted),
+          backgroundColor: E.map((x) => (x.sectional ? cssVar('--c1-wash') : accent)),
+          borderColor: accent, borderWidth: E.map((x) => (x.sectional ? 1.5 : 0)),
+          borderRadius: 4, borderSkipped: 'start', maxBarThickness: 12, categoryPercentage: 0.8, barPercentage: 0.5,
+        },
+      ];
+    } else if (metric === 'time') {
+      type = 'bar';
+      $('#secChartTitle').textContent = 'Time';
+      note = 'Minutes spent on correct answers, wrong answers and skipped questions.';
+      const noSplit = E.some((x) => x.sec.time_correct_sec === null && x.sec.time_sec !== null);
+      $('#secLegend').innerHTML = legendHtml([
+        { kind: 'bar', color: cssVar('--c-correct'), label: 'Correct' },
+        { kind: 'bar', color: cssVar('--c-wrong'), label: 'Wrong' },
+        { kind: 'bar', color: cssVar('--c-skip'), label: 'Skipped' },
+      ].concat(noSplit ? [{ kind: 'bar', color: cssVar('--c-nosplit'), label: 'No split' }] : []));
+      const toMin = (v) => (v === null || v === undefined ? null : C.round(v / 60, 2));
+      const seg = (label, color, pick) => ({
+        type: 'bar', label, data: E.map((x) => toMin(pick(x.sec))), backgroundColor: color,
+        borderColor: surface, borderWidth: { top: 2, right: 0, bottom: 0, left: 0 }, borderSkipped: 'start',
+        borderRadius: 3, maxBarThickness: 24, categoryPercentage: 0.7, barPercentage: 0.9,
+      });
+      datasets = [
+        seg('Correct', cssVar('--c-correct'), (s) => s.time_correct_sec),
+        seg('Wrong', cssVar('--c-wrong'), (s) => s.time_wrong_sec),
+        seg('Skipped', cssVar('--c-skip'), (s) => s.time_skipped_sec),
+      ];
+      if (noSplit) datasets.push(seg('Time (no split)', cssVar('--c-nosplit'), (s) => (s.time_correct_sec === null ? s.time_sec : null)));
+      opts.scales.x.stacked = true;
+      opts.scales.y.stacked = true;
+      opts.plugins.tooltip.filter = (item) => item.parsed.y !== null && item.parsed.y !== undefined;
+      opts.plugins.tooltip.callbacks.label = (ctx) => ' ' + ctx.dataset.label + ' ' + C.fmtTime(ctx.parsed.y * 60);
+    } else {
+      $('#secChartTitle').textContent = 'Score';
+      $('#secLegend').innerHTML = legendHtml([
+        { kind: 'dotline', color: accent, label: 'Each attempt' },
+        { kind: 'line-bold', color: accent, label: RECENT + '-attempt average' },
+        { kind: 'dash', color: cssVar('--c-cut'), label: 'Cut-off' },
+      ].concat(sectionalKey));
+      opts.scales.y.suggestedMax = Math.max.apply(null, E.map((x) => x.sec.max_score || 0).concat([10]));
+      opts.plugins.tooltip.filter = (item) => item.parsed.y !== null;
+      opts.plugins.tooltip.callbacks.label = (ctx) => ' ' + ctx.dataset.label + ' ' + C.fmtScore(ctx.parsed.y);
+      datasets = trendDs('Score', E.map((x) => x.sec.score), accent, {
+        pointStyle: E.map((x) => (x.sectional ? 'rectRot' : 'circle')),
+        pointRadius: E.map((x) => (x.sectional ? 5.5 : 3.5)),
+        pointBackgroundColor: E.map((x) => (x.sectional ? surface : accent)),
+        pointBorderColor: E.map((x) => (x.sectional ? accent : surface)),
+      });
+      datasets[1].label = RECENT + '-attempt average';
+      datasets.push(cutDs('Cut-off', E.map((x) => x.sec.cutoff)));
+    }
+    $('#secChartNote').textContent = note;
+    $('#secChartNote').hidden = !note;
+    makeChart('chartSection', { type, data: { labels, datasets }, options: opts, plugins: [endLabelPlugin] });
+
+    $('#secTable').innerHTML = tableHtml(['Date', 'Mock', 'Score', 'Att.', 'Acc.', 'Unseen', 'Time'], E.slice().reverse().map((x) => [
+      esc(C.fmtDate(x.exam.date)), esc(C.shortMockName(x.exam.mock_name)) + (x.sectional ? ' <span class="tag">sectional</span>' : ''),
+      C.fmtScore(x.sec.score) + '/' + C.fmtScore(x.sec.max_score), String(x.sec.attempted), C.fmtPct(x.sec.accuracy),
+      String(x.sec.unseen), C.fmtTime(x.sec.time_sec),
+    ]));
   }
 
-  function trendCell(t) {
-    if (t === null) return '<span class="muted">–</span>';
+  // ---------- Topics pane ----------
+  function levelClass(rate) {
+    if (rate === null) return 'lvl-none';
+    if (rate < CFG.WEAK_BELOW) return 'lvl-bad';
+    if (rate > CFG.STRONG_ABOVE) return 'lvl-good';
+    return 'lvl-mid';
+  }
+
+  function trendText(t) {
+    if (t === null) return 'Not enough mocks yet to see a trend.';
     const pts = Math.round(t * 100);
-    if (pts >= 10) return '<span class="trend-up">▲' + pts + '</span>';
-    if (pts <= -10) return '<span class="trend-down">▼' + Math.abs(pts) + '</span>';
-    return '<span class="muted">≈</span>';
+    if (pts >= 10) return 'Improving: +' + pts + ' points vs earlier mocks.';
+    if (pts <= -10) return 'Slipping: −' + Math.abs(pts) + ' points vs earlier mocks.';
+    return 'Steady vs earlier mocks.';
   }
+
+  function trendGlyph(t) {
+    if (t === null) return '';
+    const pts = Math.round(t * 100);
+    if (pts >= 10) return '<span class="tr up" title="Improving">▲</span>';
+    if (pts <= -10) return '<span class="tr down" title="Slipping">▼</span>';
+    return '';
+  }
+
+  const TOPICS_SHOWN = 10;
 
   function renderTopics(list) {
     const stats = C.topicStats(list, CFG);
-    const secNames = C.sectionNames(list);
+    const secNames = orderedSections(list);
     if (state.topicSection && secNames.indexOf(state.topicSection) < 0) state.topicSection = '';
-    renderSegButtons($('#topicSectionPick'), [''].concat(secNames), state.topicSection, (v) => {
-      state.topicSection = v;
-      renderTopics(state.filtered);
-    });
+    renderSegButtons($('#topicSectionPick'), [''].concat(secNames), state.topicSection,
+      (v) => (v ? shortSection(v) : 'All'),
+      (v) => { state.topicSection = v; renderTopics(state.dash.combined); });
+    $$('#topicSortPick button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.sort === state.topicOrder)));
 
     const rows = stats.filter((t) => !state.topicSection || t.section === state.topicSection);
-    const { key, dir } = state.topicSort;
-    rows.sort((a, b) => {
-      const va = a[key];
-      const vb = b[key];
-      if (va === null && vb === null) return 0;
-      if (va === null) return 1;
-      if (vb === null) return -1;
-      if (typeof va === 'string') return dir * va.localeCompare(vb);
-      return dir * (va - vb) || b.total - a.total;
-    });
-    $$('#topicTable th').forEach((th) => {
-      th.setAttribute('aria-sort', th.dataset.sort === key ? (dir > 0 ? 'ascending' : 'descending') : 'none');
-    });
-    const tbody = $('#topicTable tbody');
-    tbody.innerHTML = rows.length ? rows.map((t) =>
-      '<tr>' +
-        '<td>' + esc(t.topic) + '<span class="topic-sec">' + esc(shortSection(t.section)) + ' · ' + t.mocks + ' mock' + (t.mocks > 1 ? 's' : '') + '</span></td>' +
-        '<td class="num heat" style="' + heatStyle(t.rate) + '">' + C.fmtPct(t.rate) + '</td>' +
-        '<td class="num">' + C.fmtPct(t.attemptRate) + '</td>' +
-        '<td class="num">' + C.fmtPct(t.accuracy) + '</td>' +
-        '<td class="num">' + trendCell(t.trend) + '</td>' +
-        '<td class="num wide-only">' + t.mocks + '</td>' +
-        '<td class="num wide-only">' + C.round(t.perMock, 1) + '</td>' +
-      '</tr>'
-    ).join('') : '<tr><td colspan="7" class="muted">No topic data for these mocks yet.</td></tr>';
+    const showSec = !state.topicSection && secNames.length > 1;
 
-    // Consistently weak / strong
-    const pct = (x) => Math.round(x * 100) + '%';
-    $('#weakRule').textContent = 'Score below ' + pct(CFG.WEAK_BELOW) + ' across ' + CFG.MIN_MOCKS_FOR_PATTERN + '+ mocks';
-    $('#strongRule').textContent = 'Score above ' + pct(CFG.STRONG_ABOVE) + ' across ' + CFG.MIN_MOCKS_FOR_PATTERN + '+ mocks';
-    const chip = (t) => '<li>' + esc(t.topic) + ' <b>' + C.fmtPct(t.rate) + '</b></li>';
-    const weak = stats.filter((t) => t.status === 'weak').sort((a, b) => a.rate - b.rate);
-    const strong = stats.filter((t) => t.status === 'strong').sort((a, b) => b.rate - a.rate);
-    $('#weakList').innerHTML = weak.length ? weak.map(chip).join('') : '<li class="none">None yet</li>';
-    $('#strongList').innerHTML = strong.length ? strong.map(chip).join('') : '<li class="none">None yet</li>';
-
-    // Marks lost per topic
-    const leaks = C.markLeaks(stats, 6);
+    // Losing the most marks
+    const leaks = C.markLeaks(rows, 5);
     const maxLost = leaks.length ? leaks[0].lostPerMock : 1;
     $('#leaks').innerHTML = leaks.length ? leaks.map((t) =>
       '<li>' +
         '<span class="leak-name">' + esc(t.topic) + '</span>' +
         '<span class="leak-val">−' + C.round(t.lostPerMock, 1) + '</span>' +
-        '<span class="leak-bar"><span style="width:' + Math.round((t.lostPerMock / maxLost) * 100) + '%"></span></span>' +
-        '<span class="leak-detail">' + esc(shortSection(t.section)) + ' · in ' + t.mocks + '/' + t.examsInView + ' mocks · ~' +
-          C.round(t.perMock, 1) + ' Qs each time · tried ' + C.fmtPct(t.attemptRate) + ' · accuracy ' + C.fmtPct(t.accuracy) + '</span>' +
+        '<span class="leak-bar"><span style="width:' + Math.max(4, Math.round((t.lostPerMock / maxLost) * 100)) + '%"></span></span>' +
+        '<span class="leak-detail">' + (showSec ? esc(shortSection(t.section)) + ' · ' : '') + '~' + C.round(t.perMock, 1) +
+          ' Qs per mock · tried ' + C.fmtPct(t.attemptRate) + ' · accuracy ' + C.fmtPct(t.accuracy) + '</span>' +
       '</li>'
     ).join('') : '<li class="muted">Add topic-wise data to see this.</li>';
+
+    // All topics
+    const order = state.topicOrder;
+    rows.sort((a, b) => {
+      if (order === 'freq') return b.perMock - a.perMock || a.topic.localeCompare(b.topic);
+      const ra = a.rate === null ? -1 : a.rate;
+      const rb = b.rate === null ? -1 : b.rate;
+      const d = order === 'strong' ? rb - ra : ra - rb;
+      return d || b.total - a.total;
+    });
+    $('#topicList').innerHTML = rows.length ? rows.map((t, i) => {
+      const key = t.section + '||' + t.topic;
+      const open = state.openTopics.has(key);
+      const pattern = t.status === 'weak'
+        ? '<span class="tag tag-bad">consistently weak</span> below ' + Math.round(CFG.WEAK_BELOW * 100) + '% across ' + t.mocks + ' mocks'
+        : t.status === 'strong'
+          ? '<span class="tag tag-good">consistently strong</span> above ' + Math.round(CFG.STRONG_ABOVE * 100) + '% across ' + t.mocks + ' mocks'
+          : '';
+      return '<li' + (i >= TOPICS_SHOWN && !state.topicsAll ? ' hidden' : '') + '>' +
+        '<button type="button" class="trow" aria-expanded="' + open + '" data-topic-key="' + esc(key) + '">' +
+          '<span class="tmain"><span class="tname">' + esc(t.topic) + '</span>' +
+            '<span class="tsub">' + (showSec ? esc(shortSection(t.section)) + ' · ' : '') + plural(t.mocks, 'mock') + '</span></span>' +
+          '<span class="tmeter" aria-hidden="true"><i class="' + levelClass(t.rate) + '" style="width:' + Math.round((t.rate || 0) * 100) + '%"></i></span>' +
+          '<span class="tval">' + C.fmtPct(t.rate) + trendGlyph(t.trend) + '</span>' +
+        '</button>' +
+        '<div class="tdetail"' + (open ? '' : ' hidden') + '>' +
+          '<span><b>' + t.correct + '</b> correct of <b>' + t.total + '</b> questions</span>' +
+          '<span>Tried <b>' + C.fmtPct(t.attemptRate) + '</b> · accuracy <b>' + C.fmtPct(t.accuracy) + '</b></span>' +
+          '<span>~' + C.round(t.perMock, 1) + ' questions per mock</span>' +
+          '<span>' + trendText(t.trend) + '</span>' +
+          (pattern ? '<span>' + pattern + '</span>' : '') +
+        '</div>' +
+      '</li>';
+    }).join('') : '<li class="muted">No topic data for these mocks yet.</li>';
+    const more = $('#topicsMore');
+    more.hidden = rows.length <= TOPICS_SHOWN;
+    more.textContent = state.topicsAll ? 'Show fewer' : 'Show all ' + rows.length + ' topics';
   }
 
   // =========================================================================
@@ -1105,7 +1396,11 @@
   // =========================================================================
   // 8. History list, backup & settings
   // =========================================================================
-  /** History: newest day first, grouped under a date heading; mocks numbered in the order taken that day. */
+  /**
+   * History: newest day first, grouped under a date heading. Each mock is one
+   * compact row (name, score, percentile, cut-off); tapping it opens the
+   * section breakdown, notes and the Edit / Delete buttons.
+   */
   function renderHistory() {
     const list = state.exams.slice().reverse();
     $('#historyEmpty').hidden = list.length > 0 || !state.loaded;
@@ -1115,24 +1410,47 @@
       let head = '';
       if (e.date !== lastDate) {
         lastDate = e.date;
-        head = '<li class="h-day">' + esc(C.fmtDate(e.date, true)) +
-          '<span class="muted"> · ' + e.dayCount + ' mock' + (e.dayCount > 1 ? 's' : '') + '</span></li>';
+        head = '<li class="h-day"><span>' + esc(C.fmtDate(e.date, true)) + '</span>' +
+          (e.dayCount > 1 ? '<span class="muted">' + e.dayCount + ' mocks</span>' : '') + '</li>';
       }
-      const meta = [
-        e.dayCount > 1 ? 'Mock ' + e.dayIndex + ' of the day' : '',
-        e.percentile !== null ? e.percentile + ' %ile' : '',
-        'accuracy ' + C.fmtPct(e.accuracy),
+      const kind = C.examKind(e, CFG);
+      const tags = [];
+      if (kind.sectional) tags.push('<span class="tag">sectional</span>');
+      if (e.incomplete) tags.push('<span class="tag">incomplete</span>');
+      const sub = [];
+      if (e.percentile !== null) sub.push('<span>' + C.round(e.percentile, 1) + ' %ile</span>');
+      if (e.margin !== null) {
+        sub.push('<span><span class="' + (e.margin >= 0 ? 'up' : 'down') + '">' + (e.margin >= 0 ? '✓ ' : '') + signed(e.margin) + '</span> vs cut-off</span>');
+      }
+      const open = state.openHistory.has(e.exam_id);
+      const secs = e.sections.map((s) =>
+        '<li><b>' + esc(shortSection(s.section)) + '</b>' +
+        '<span>' + C.fmtScore(s.score) + '/' + C.fmtScore(s.max_score) + (s.cutoff !== null ? ' <span class="muted">(cut ' + C.fmtScore(s.cutoff) + ')</span>' : '') + '</span>' +
+        '<span class="muted">' + s.attempted + ' attempted' + (s.good_min !== null ? ' (good ' + s.good_min + '–' + s.good_max + ')' : '') +
+          ' · ' + C.fmtPct(s.accuracy) + ' accuracy' + (s.unseen ? ' · ' + s.unseen + ' unseen' : '') +
+          (s.time_sec !== null ? ' · ' + C.fmtTime(s.time_sec) : '') + '</span></li>'
+      ).join('');
+      const facts = [
+        e.dayCount > 1 ? 'Mock ' + e.dayIndex + ' of ' + e.dayCount + ' that day' : '',
+        e.rank !== null ? 'Rank ' + e.rank.toLocaleString('en-IN') + (e.total_takers ? ' of ' + e.total_takers.toLocaleString('en-IN') : '') : '',
+        e.average_score !== null ? 'Avg of all takers ' + C.fmtScore(e.average_score) : '',
         e.exam_type,
-      ].filter(Boolean).map((m) => '<span>' + esc(m) + '</span>').join('');
-      return head + '<li>' +
-        '<div class="h-top"><div class="h-name">' + esc(C.shortMockName(e.mock_name)) + '</div>' +
-        '<div class="h-score">' + C.fmtScore(e.score) + '<span class="muted small"> / ' + C.fmtScore(e.max_score) + '</span></div></div>' +
-        '<div class="h-meta">' + meta + marginBadge(e.margin) +
-        (e.incomplete ? '<span class="badge neutral">incomplete</span>' : '') + '</div>' +
-        (e.notes ? '<div class="small muted" style="margin:-4px 0 8px">' + esc(e.notes) + '</div>' : '') +
-        '<div class="h-actions">' +
-          '<button type="button" class="btn btn-sm" data-edit="' + esc(e.exam_id) + '">Edit</button>' +
-          '<button type="button" class="btn btn-sm btn-ghost" data-del="' + esc(e.exam_id) + '">Delete</button>' +
+      ].filter(Boolean).map((x) => '<span>' + esc(x) + '</span>').join('');
+      return head + '<li class="h-item">' +
+        '<button type="button" class="h-row" aria-expanded="' + open + '" data-toggle="' + esc(e.exam_id) + '">' +
+          '<span class="h-main"><span class="h-name">' + esc(C.shortMockName(e.mock_name)) + '</span>' +
+            '<span class="h-sub">' + tags.join('') + sub.join('<span class="sep">·</span>') + '</span></span>' +
+          '<span class="h-score">' + C.fmtScore(e.score) + '<small>/' + C.fmtScore(e.max_score) + '</small></span>' +
+          '<svg class="chev" viewBox="0 0 20 20" aria-hidden="true"><path d="M6 8l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
+        '</button>' +
+        '<div class="h-detail"' + (open ? '' : ' hidden') + '>' +
+          '<ul class="h-secs">' + secs + '</ul>' +
+          '<div class="h-facts">' + facts + '</div>' +
+          (e.notes ? '<p class="h-notes">' + esc(e.notes) + '</p>' : '') +
+          '<div class="h-actions">' +
+            '<button type="button" class="btn btn-sm" data-edit="' + esc(e.exam_id) + '">Edit</button>' +
+            '<button type="button" class="btn btn-sm btn-ghost danger" data-del="' + esc(e.exam_id) + '">Delete</button>' +
+          '</div>' +
         '</div></li>';
     }).join('');
     $('#connInfo').textContent = state.demo
@@ -1140,7 +1458,17 @@
       : 'Connected to Google Sheet via Apps Script.';
   }
 
+  /** Open / close one expandable row (history mock or topic) without re-rendering the list. */
+  function toggleRow(btn, set, key) {
+    const open = btn.getAttribute('aria-expanded') !== 'true';
+    btn.setAttribute('aria-expanded', String(open));
+    btn.nextElementSibling.hidden = !open;
+    if (open) set.add(key); else set.delete(key);
+  }
+
   async function onHistoryClick(ev) {
+    const row = ev.target.closest('[data-toggle]');
+    if (row) { toggleRow(row, state.openHistory, row.dataset.toggle); return; }
     const editBtn = ev.target.closest('[data-edit]');
     if (editBtn) { startEdit(editBtn.dataset.edit); return; }
     const delBtn = ev.target.closest('[data-del]');
@@ -1232,20 +1560,56 @@
       if (go) showView(go.dataset.goto);
     });
 
-    ['#fType', '#fLastN', '#fFrom', '#fTo', '#fIncomplete'].forEach((id) => $(id).addEventListener('change', readFilters));
+    document.addEventListener('click', (ev) => {
+      const go = ev.target.closest('[data-pane-go]');
+      if (go) showPane(go.dataset.paneGo);
+    });
+    $('#dashTabs').addEventListener('click', (ev) => {
+      const b = ev.target.closest('[data-pane]');
+      if (b) showPane(b.dataset.pane);
+    });
+    ['#fType', '#fFrom', '#fTo', '#fIncomplete', '#fSectionals'].forEach((id) => $(id).addEventListener('change', readFilters));
+    $('#rangePick').addEventListener('click', (ev) => {
+      const b = ev.target.closest('button');
+      if (!b) return;
+      state.filters = Object.assign({}, state.filters, { lastN: Number(b.dataset.n) || 0 });
+      saveFilters();
+    });
+    $('#filterToggle').addEventListener('click', () => {
+      const panel = $('#filterPanel');
+      panel.hidden = !panel.hidden;
+      $('#filterToggle').setAttribute('aria-expanded', String(!panel.hidden));
+    });
     $('#fReset').addEventListener('click', () => {
       state.filters = Object.assign({}, defaultFilters);
-      store.setJSON(KEYS.filters, state.filters);
-      renderFilterOptions();
-      renderDashboard();
+      saveFilters();
     });
-    $$('#topicTable th').forEach((th) => th.addEventListener('click', () => {
-      const key = th.dataset.sort;
-      state.topicSort = state.topicSort.key === key
-        ? { key, dir: -state.topicSort.dir }
-        : { key, dir: key === 'topic' ? 1 : key === 'rate' || key === 'accuracy' || key === 'attemptRate' || key === 'trend' ? 1 : -1 };
-      renderTopics(state.filtered);
-    }));
+    $('#trendPick').addEventListener('click', (ev) => {
+      const b = ev.target.closest('button');
+      if (!b) return;
+      state.trendView = b.dataset.trend;
+      renderPaneCharts();
+    });
+    $('#secMetricPick').addEventListener('click', (ev) => {
+      const b = ev.target.closest('button');
+      if (!b) return;
+      state.secMetric = b.dataset.metric;
+      renderPaneCharts();
+    });
+    $('#topicSortPick').addEventListener('click', (ev) => {
+      const b = ev.target.closest('button');
+      if (!b) return;
+      state.topicOrder = b.dataset.sort;
+      renderTopics(state.dash.combined);
+    });
+    $('#topicsMore').addEventListener('click', () => {
+      state.topicsAll = !state.topicsAll;
+      renderTopics(state.dash.combined);
+    });
+    $('#topicList').addEventListener('click', (ev) => {
+      const row = ev.target.closest('[data-topic-key]');
+      if (row) toggleRow(row, state.openTopics, row.dataset.topicKey);
+    });
 
     // Re-colour charts when the phone switches between light and dark mode.
     if (window.matchMedia) {
